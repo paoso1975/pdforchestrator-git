@@ -1,0 +1,16 @@
+services:
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    env_file:
+      - ./worker/.env
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cpus: 2
+    mem_limit: 2g
+    tmpfs:
+      - /tmp/pdf-orchestrator:rw,noexec,nosuid,size=1g
+    # The service polls authenticated HTTP and does not expose an inbound health port.
+    # Monitor via Compose restart state and the authenticated /health endpoint.

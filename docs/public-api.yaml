@@ -1,0 +1,148 @@
+openapi: 3.1.0
+info:
+  title: PDFOrchestrator Public API
+  version: 1.0.0
+  description: Asynchronous PDF batch execution API. The worker processes PDFs outside Vercel.
+servers:
+  - url: https://api.pdforchestrator.com
+  - url: https://{deployment}.vercel.app
+    variables:
+      deployment:
+        default: your-project
+security:
+  - PfoHmac: []
+paths:
+  /api/public/v1/batches/{slug}/runs:
+    post:
+      summary: Queue a run by published batch slug
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, pattern: '^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$' } }, { name: versionId, in: query, required: false, schema: { type: string, format: uuid } }, { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [input], properties: { input: { type: object, additionalProperties: true } } }
+      responses: { '202': { description: Run queued; includes runId and statusUrl }, '200': { description: Existing idempotent run }, '400': { description: Invalid request or batch input }, '401': { description: Invalid HMAC credentials }, '404': { description: Published batch is not accessible }, '409': { description: Upload or idempotency conflict }, '413': { description: Request too large }, '429': { description: Rate or concurrency limit }, '500': { description: Request failed safely; requestId included } }
+  /api/public/v1/runs/{runId}:
+    get:
+      summary: Get run status, progress, errors and output summary
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Run state }, '401': { description: Invalid HMAC credentials }, '404': { description: Run not found or not authorized } }
+  /api/public/v1/runs/{runId}/steps:
+    get:
+      summary: Get persisted step states
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Step state list } }
+  /api/public/v1/runs/{runId}/outputs:
+    get:
+      summary: List output artifacts with short lived signed download URLs
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Output manifest } }
+  /api/public/v1/runs/{runId}/outputs/{fileId}:
+    get:
+      summary: Generate a signed URL for an authorized output
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string, format: uuid } }, { name: fileId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Signed download URL } }
+  /api/public/v1/runs/{runId}/cancel:
+    post:
+      summary: Request run cancellation
+      parameters: [{ name: runId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '202': { description: Cancellation accepted } }
+  /api/public/v1/uploads:
+    post:
+      summary: Create direct-to-Cubbit upload session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadRequest' }
+      responses: { '201': { description: Upload session created; files go directly to Cubbit }, '401': { description: Invalid HMAC credentials }, '413': { description: Size or storage quota exceeded } }
+  /v1/uploads:
+    post:
+      summary: Create a direct-to-Cubbit upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadRequest' }
+      responses:
+        '201': { description: Upload session created; PUT to uploadUrl or use multipart URLs }
+        '401': { description: Invalid HMAC credentials }
+        '413': { description: Upload or tenant storage quota exceeded }
+  /v1/uploads/{id}:
+    get:
+      summary: Confirm upload object state
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      responses: { '200': { description: Current object state }, '404': { description: Not found } }
+  /v1/uploads/{id}/parts/{partNumber}:
+    get:
+      summary: Get one presigned multipart part URL
+      parameters: [{ $ref: '#/components/parameters/id' }, { name: partNumber, in: path, required: true, schema: { type: integer, minimum: 1 } }]
+      responses: { '200': { description: Presigned part URL } }
+  /v1/uploads/{id}/complete:
+    post:
+      summary: Complete multipart upload
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [parts], properties: { parts: { type: array, items: { type: object, required: [partNumber, etag], properties: { partNumber: { type: integer }, etag: { type: string } } } } } }
+      responses: { '200': { description: Multipart object verified } }
+  /v1/batches/{batchId}/schema:
+    get:
+      summary: Get active or explicitly scoped published version schemas
+      parameters: [{ name: batchId, in: path, required: true, schema: { type: string, format: uuid } }, { name: versionId, in: query, required: false, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Input and output schemas } }
+  /v1/batches/{batchId}/executions:
+    post:
+      summary: Queue a batch execution
+      parameters: [{ name: batchId, in: path, required: true, schema: { type: string, format: uuid } }, { name: versionId, in: query, required: false, schema: { type: string, format: uuid }, description: Select a version explicitly allowed by this credential; otherwise use the active version }, { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [input], properties: { input: { type: object, additionalProperties: true } } }
+      responses: { '202': { description: Execution queued }, '400': { description: Invalid input schema }, '409': { description: Idempotency conflict }, '429': { description: Rate or concurrency limit } }
+  /v1/executions/{executionId}:
+    get:
+      summary: Poll execution status
+      parameters: [{ name: executionId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Current execution state } }
+  /v1/executions/{executionId}/steps:
+    get:
+      summary: List persisted step results
+      parameters: [{ name: executionId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Steps } }
+  /v1/executions/{executionId}/outputs:
+    get:
+      summary: List output files and short lived download URLs
+      parameters: [{ name: executionId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Outputs } }
+  /v1/executions/{executionId}/outputs/{fileId}:
+    get:
+      summary: Get a short lived download URL for one output
+      parameters: [{ name: executionId, in: path, required: true, schema: { type: string, format: uuid } }, { name: fileId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Signed download URL } }
+  /v1/executions/{executionId}/cancel:
+    post:
+      summary: Request execution cancellation
+      parameters: [{ name: executionId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '202': { description: Cancellation accepted } }
+components:
+  securitySchemes:
+    PfoHmac:
+      type: apiKey
+      in: header
+      name: X-PFO-Key
+      description: Every request also requires X-PFO-Timestamp, X-PFO-Nonce, X-PFO-Content-SHA256 and X-PFO-Signature.
+  parameters:
+    id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+  schemas:
+    UploadRequest:
+      type: object
+      additionalProperties: false
+      required: [filename, sizeBytes, sha256]
+      properties:
+        filename: { type: string, maxLength: 255 }
+        sizeBytes: { type: integer, minimum: 1 }
+        sha256: { type: string, pattern: '^[a-fA-F0-9]{64}$' }

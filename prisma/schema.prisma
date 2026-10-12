@@ -1,0 +1,628 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  DESIGNER
+  OPERATOR
+  VIEWER
+}
+
+enum BatchStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ExecutionStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  SUCCEEDED
+  CANCEL_REQUESTED
+  FAILED
+  CANCELLED
+}
+
+enum StepExecutionStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum StoredFileKind {
+  INPUT
+  INTERMEDIATE
+  OUTPUT
+}
+
+enum WorkflowStatus {
+  DRAFT
+  VALIDATED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum WorkflowRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCEL_REQUESTED
+  CANCELLED
+}
+
+enum WorkflowNodeRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+model User {
+  id          String                   @id @db.Uuid
+  email       String?                  @unique
+  displayName String?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  memberships OrganizationMembership[]
+}
+
+model Organization {
+  id           String                   @id @default(uuid()) @db.Uuid
+  name         String
+  slug         String                   @unique
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  memberships  OrganizationMembership[]
+  batches      Batch[]
+  credentials  ApiCredential[]
+  executions   BatchExecution[]
+  files        StoredFile[]
+  webhooks     WebhookEndpoint[]
+  workflows    Workflow[]
+  workflowRuns WorkflowRun[]
+  auditEvents  AuditEvent[]
+}
+
+model OrganizationMembership {
+  organizationId String       @db.Uuid
+  userId         String       @db.Uuid
+  role           Role         @default(VIEWER)
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, userId])
+  @@index([userId, createdAt])
+}
+
+model Batch {
+  id               String               @id @default(uuid()) @db.Uuid
+  organizationId   String               @db.Uuid
+  name             String
+  slug             String
+  description      String?
+  status           BatchStatus          @default(DRAFT)
+  activeVersionId  String?              @unique @db.Uuid
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  organization     Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  versions         BatchVersion[]
+  activeVersion    BatchVersion?        @relation("ActiveBatchVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
+  executions       BatchExecution[]
+  credentialGrants ApiCredentialGrant[]
+  draftRevisions   BatchDraftRevision[]
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, id])
+  @@index([organizationId, status, updatedAt])
+}
+
+model BatchVersion {
+  id           String           @id @default(uuid()) @db.Uuid
+  batchId      String           @db.Uuid
+  version      Int
+  graph        Json
+  inputSchema  Json
+  outputSchema Json
+  toolManifest Json
+  publishedAt  DateTime?
+  configHash   String
+  revision     Int              @default(1)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @default(now()) @updatedAt
+  batch        Batch            @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  activeFor    Batch?           @relation("ActiveBatchVersion")
+  executions   BatchExecution[]
+
+  @@unique([batchId, version])
+  @@unique([batchId, id])
+  @@index([batchId, publishedAt])
+}
+
+model BatchDraftRevision {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  batchId        String   @db.Uuid
+  revision       Int
+  batchName      String   @db.VarChar(120)
+  graph          Json
+  inputSchema    Json
+  outputSchema   Json
+  actorId        String?  @db.Uuid
+  createdAt      DateTime @default(now())
+  batch          Batch    @relation(fields: [organizationId, batchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([batchId, revision])
+  @@index([organizationId, batchId, createdAt])
+}
+
+model ToolDefinition {
+  id               String   @id @default(uuid()) @db.Uuid
+  logicalId        String
+  version          String
+  name             String
+  description      String
+  category         String
+  runtime          String
+  inputPorts       Json
+  outputPorts      Json
+  parametersSchema Json
+  timeoutSeconds   Int      @default(60)
+  resourceClass    String   @default("standard")
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([logicalId, version])
+  @@index([enabled, category, logicalId])
+}
+
+model ApiCredential {
+  id               String                    @id @default(uuid()) @db.Uuid
+  organizationId   String                    @db.Uuid
+  name             String
+  tokenHash        String                    @unique
+  tokenPrefix      String
+  keyId            String?                   @unique
+  secretCiphertext String?
+  secretIv         String?
+  secretAuthTag    String?
+  secretKeyVersion Int?
+  lastUsedAt       DateTime?
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime                  @default(now())
+  organization     Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  grants           ApiCredentialGrant[]
+  executions       BatchExecution[]
+  nonces           ApiRequestNonce[]
+  rateBuckets      ApiRateBucket[]
+  workflowRuns     WorkflowRun[]
+  workflowGrants   WorkflowCredentialGrant[]
+  uploadedFiles    StoredFile[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, revokedAt])
+}
+
+model Workflow {
+  id               String                    @id @default(uuid()) @db.Uuid
+  organizationId   String                    @db.Uuid
+  name             String                    @db.VarChar(120)
+  slug             String                    @db.VarChar(100)
+  description      String?
+  status           WorkflowStatus            @default(DRAFT)
+  revision         Int                       @default(1)
+  activeVersionId  String?                   @unique @db.Uuid
+  createdById      String?                   @db.Uuid
+  updatedById      String?                   @db.Uuid
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  organization     Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  drafts           WorkflowDraft[]
+  versions         WorkflowVersion[]         @relation("WorkflowVersions")
+  activeVersion    WorkflowVersion?          @relation("ActiveWorkflowVersion", fields: [organizationId, id, activeVersionId], references: [organizationId, workflowId, id], onDelete: Restrict)
+  publications     WorkflowPublication[]
+  credentialGrants WorkflowCredentialGrant[]
+  runs             WorkflowRun[]
+  auditEvents      AuditEvent[]
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, activeVersionId])
+  @@index([organizationId, status, updatedAt])
+}
+
+model WorkflowDraft {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  workflowId     String    @db.Uuid
+  revision       Int
+  nodes          Json
+  edges          Json
+  viewport       Json
+  inputSchema    Json
+  outputSchema   Json
+  compiledPlan   Json?
+  hash           String?   @db.Char(64)
+  validatedAt    DateTime?
+  updatedById    String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  workflow       Workflow  @relation(fields: [organizationId, workflowId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([workflowId])
+  @@unique([organizationId, workflowId, revision])
+  @@index([organizationId, updatedAt])
+}
+
+model WorkflowVersion {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @db.Uuid
+  workflowId     String                @db.Uuid
+  version        Int
+  revision       Int
+  nodes          Json
+  edges          Json
+  viewport       Json
+  compiledPlan   Json
+  inputSchema    Json
+  outputSchema   Json
+  hash           String                @db.Char(64)
+  createdById    String?               @db.Uuid
+  createdAt      DateTime              @default(now())
+  workflow       Workflow              @relation("WorkflowVersions", fields: [organizationId, workflowId], references: [organizationId, id], onDelete: Restrict)
+  activeFor      Workflow?             @relation("ActiveWorkflowVersion")
+  publications   WorkflowPublication[]
+  runs           WorkflowRun[]
+
+  @@unique([workflowId, version])
+  @@unique([organizationId, workflowId, id])
+  @@index([organizationId, workflowId, createdAt])
+}
+
+model WorkflowPublication {
+  id                String          @id @default(uuid()) @db.Uuid
+  organizationId    String          @db.Uuid
+  workflowId        String          @db.Uuid
+  workflowVersionId String          @db.Uuid
+  publishedById     String?         @db.Uuid
+  publishedAt       DateTime        @default(now())
+  revokedAt         DateTime?
+  workflow          Workflow        @relation(fields: [organizationId, workflowId], references: [organizationId, id], onDelete: Cascade)
+  version           WorkflowVersion @relation(fields: [organizationId, workflowId, workflowVersionId], references: [organizationId, workflowId, id], onDelete: Restrict)
+
+  @@index([organizationId, workflowId, publishedAt])
+  @@index([organizationId, workflowId, workflowVersionId])
+}
+
+model WorkflowCredentialGrant {
+  organizationId     String        @db.Uuid
+  workflowId         String        @db.Uuid
+  credentialId       String        @db.Uuid
+  workflowVersionIds String[]      @default([]) @db.Uuid
+  createdAt          DateTime      @default(now())
+  workflow           Workflow      @relation(fields: [organizationId, workflowId], references: [organizationId, id], onDelete: Cascade)
+  credential         ApiCredential @relation(fields: [organizationId, credentialId], references: [organizationId, id], onDelete: Cascade)
+
+  @@id([organizationId, workflowId, credentialId])
+  @@index([organizationId, credentialId])
+}
+
+model WorkflowRun {
+  id                String             @id @default(uuid()) @db.Uuid
+  organizationId    String             @db.Uuid
+  workflowId        String             @db.Uuid
+  workflowVersionId String             @db.Uuid
+  credentialId      String?            @db.Uuid
+  status            WorkflowRunStatus  @default(QUEUED)
+  progress          Int                @default(0)
+  input             Json
+  output            Json?
+  error             Json?
+  idempotencyKey    String?
+  attemptCount      Int                @default(0)
+  maxAttempts       Int                @default(3)
+  leaseOwner        String?
+  leaseExpiresAt    DateTime?
+  heartbeatAt       DateTime?
+  currentNodeId     String?
+  durationMs        Int?
+  createdAt         DateTime           @default(now())
+  startedAt         DateTime?
+  completedAt       DateTime?
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workflow          Workflow           @relation(fields: [organizationId, workflowId], references: [organizationId, id], onDelete: Restrict)
+  version           WorkflowVersion    @relation(fields: [organizationId, workflowId, workflowVersionId], references: [organizationId, workflowId, id], onDelete: Restrict)
+  credential        ApiCredential?     @relation(fields: [organizationId, credentialId], references: [organizationId, id], onDelete: Restrict)
+  nodeRuns          WorkflowNodeRun[]
+  artifacts         WorkflowArtifact[]
+
+  @@unique([credentialId, idempotencyKey])
+  @@unique([organizationId, id])
+  @@index([organizationId, status, createdAt])
+  @@index([status, leaseExpiresAt, createdAt])
+  @@index([organizationId, workflowId, createdAt])
+}
+
+model WorkflowNodeRun {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @db.Uuid
+  workflowRunId  String                @db.Uuid
+  nodeId         String                @db.VarChar(200)
+  toolId         String                @db.VarChar(200)
+  toolVersion    String                @db.VarChar(64)
+  status         WorkflowNodeRunStatus @default(QUEUED)
+  progress       Int                   @default(0)
+  attempts       Int                   @default(0)
+  input          Json?
+  output         Json?
+  error          Json?
+  createdAt      DateTime              @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  run            WorkflowRun           @relation(fields: [organizationId, workflowRunId], references: [organizationId, id], onDelete: Cascade)
+  artifacts      WorkflowArtifact[]
+
+  @@unique([workflowRunId, nodeId])
+  @@unique([organizationId, workflowRunId, id])
+  @@index([organizationId, workflowRunId, status])
+}
+
+model WorkflowArtifact {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  workflowRunId  String           @db.Uuid
+  nodeRunId      String?          @db.Uuid
+  bucket         String           @db.VarChar(255)
+  objectKey      String           @db.VarChar(1024)
+  filename       String           @db.VarChar(255)
+  mimeType       String           @db.VarChar(255)
+  sizeBytes      BigInt
+  sha256         String           @db.Char(64)
+  createdAt      DateTime         @default(now())
+  expiresAt      DateTime?
+  run            WorkflowRun      @relation(fields: [organizationId, workflowRunId], references: [organizationId, id], onDelete: Cascade)
+  nodeRun        WorkflowNodeRun? @relation(fields: [organizationId, workflowRunId, nodeRunId], references: [organizationId, workflowRunId, id], onDelete: Cascade)
+
+  @@unique([bucket, objectKey])
+  @@index([organizationId, workflowRunId, createdAt])
+  @@index([expiresAt])
+}
+
+model AuditEvent {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  workflowId     String?      @db.Uuid
+  actorId        String?      @db.Uuid
+  action         String       @db.VarChar(120)
+  resourceType   String       @db.VarChar(80)
+  resourceId     String?      @db.VarChar(200)
+  requestId      String?      @db.VarChar(128)
+  metadata       Json         @default("{}")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workflow       Workflow?    @relation(fields: [organizationId, workflowId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, workflowId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model ApiRequestNonce {
+  id           String        @id @default(uuid()) @db.Uuid
+  credentialId String        @db.Uuid
+  nonce        String        @db.VarChar(128)
+  expiresAt    DateTime
+  createdAt    DateTime      @default(now())
+  credential   ApiCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@unique([credentialId, nonce])
+  @@index([expiresAt])
+}
+
+model ApiRateBucket {
+  id           String        @id @default(uuid()) @db.Uuid
+  credentialId String        @db.Uuid
+  windowStart  DateTime
+  requestCount Int           @default(0)
+  jobCount     Int           @default(0)
+  credential   ApiCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@unique([credentialId, windowStart])
+  @@index([windowStart])
+}
+
+model ApiCredentialGrant {
+  credentialId    String        @db.Uuid
+  batchId         String        @db.Uuid
+  batchVersionIds String[]      @default([]) @db.Uuid
+  createdAt       DateTime      @default(now())
+  credential      ApiCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  batch           Batch         @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@id([credentialId, batchId])
+  @@index([batchId])
+}
+
+model BatchExecution {
+  id                String           @id @default(uuid()) @db.Uuid
+  organizationId    String           @db.Uuid
+  batchId           String           @db.Uuid
+  batchVersionId    String           @db.Uuid
+  credentialId      String?          @db.Uuid
+  status            ExecutionStatus  @default(QUEUED)
+  progress          Int              @default(0)
+  input             Json
+  output            Json?
+  idempotencyKey    String?
+  error             Json?
+  leaseOwner        String?
+  leaseExpiresAt    DateTime?
+  heartbeatAt       DateTime?
+  runAfter          DateTime         @default(now())
+  attemptCount      Int              @default(0)
+  maxAttempts       Int              @default(3)
+  currentStepId     String?
+  pagesProcessed    Int              @default(0)
+  durationMs        Int?
+  cancelRequestedAt DateTime?
+  createdAt         DateTime         @default(now())
+  startedAt         DateTime?
+  completedAt       DateTime?
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  batch             Batch            @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  batchVersion      BatchVersion     @relation(fields: [batchVersionId], references: [id], onDelete: Restrict)
+  credential        ApiCredential?   @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  steps             StepExecution[]
+  events            ExecutionEvent[]
+
+  @@unique([credentialId, idempotencyKey])
+  @@index([organizationId, status, createdAt])
+  @@index([status, runAfter, leaseExpiresAt])
+  @@index([batchId, createdAt])
+}
+
+model StepExecution {
+  id          String              @id @default(uuid()) @db.Uuid
+  executionId String              @db.Uuid
+  nodeId      String
+  toolId      String
+  toolVersion String
+  status      StepExecutionStatus @default(QUEUED)
+  progress    Int                 @default(0)
+  attempts    Int                 @default(0)
+  input       Json?
+  output      Json?
+  error       Json?
+  createdAt   DateTime            @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  execution   BatchExecution      @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@unique([executionId, nodeId])
+  @@index([executionId, status])
+}
+
+model ExecutionEvent {
+  id          String         @id @default(uuid()) @db.Uuid
+  executionId String         @db.Uuid
+  type        String
+  payload     Json
+  createdAt   DateTime       @default(now())
+  execution   BatchExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId, createdAt])
+}
+
+model StoredFile {
+  id                  String         @id @default(uuid()) @db.Uuid
+  organizationId      String         @db.Uuid
+  credentialId        String?        @db.Uuid
+  bucket              String
+  objectKey           String
+  filename            String
+  mimeType            String
+  sizeBytes           BigInt
+  sha256              String
+  kind                StoredFileKind
+  expiresAt           DateTime?
+  expectedSizeBytes   BigInt?
+  uploadState         String         @default("UPLOADED")
+  uploadId            String?
+  retentionLeaseUntil DateTime?
+  retentionLeaseOwner String?
+  createdAt           DateTime       @default(now())
+  organization        Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  credential          ApiCredential? @relation(fields: [organizationId, credentialId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([bucket, objectKey])
+  @@index([organizationId, kind, createdAt])
+  @@index([organizationId, credentialId, kind, createdAt])
+  @@index([expiresAt])
+}
+
+model WebhookEndpoint {
+  id               String            @id @default(uuid()) @db.Uuid
+  organizationId   String            @db.Uuid
+  url              String
+  secret           String
+  secretIv         String?
+  secretAuthTag    String?
+  secretKeyVersion Int?
+  eventTypes       String[]
+  enabled          Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries       WebhookDelivery[]
+
+  @@index([organizationId, enabled])
+}
+
+model WebhookDelivery {
+  id             String          @id @default(uuid()) @db.Uuid
+  endpointId     String          @db.Uuid
+  eventId        String          @db.Uuid
+  payload        Json
+  status         String          @default("PENDING")
+  attempts       Int             @default(0)
+  nextAttemptAt  DateTime?
+  deliveredAt    DateTime?
+  lastError      String?
+  leaseExpiresAt DateTime?
+  leaseOwner     String?
+  createdAt      DateTime        @default(now())
+  endpoint       WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@unique([endpointId, eventId])
+  @@index([status, nextAttemptAt])
+  @@index([endpointId, createdAt])
+}
+
+// Existing application tables are preserved.
+model Document {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  storagePath String?
+  status      String   @default("uploaded")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerId, createdAt])
+}
+
+// Profile mirror only; Supabase Auth remains the identity source of truth.
+model UserProfile {
+  id          String   @id
+  email       String?  @unique
+  displayName String?
+  role        String   @default("user")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([role, createdAt])
+}
+
+model WorkerHeartbeat {
+  workerId      String   @id @db.VarChar(160)
+  version       String?  @db.VarChar(80)
+  concurrency   Int
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([lastSeenAt])
+}

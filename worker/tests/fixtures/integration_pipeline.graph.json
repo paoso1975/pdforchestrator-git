@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    { "id": "input", "type": "tool", "position": { "x": 0, "y": 120 }, "data": { "toolId": "input.pdf-list", "toolVersion": "1.0.0", "label": "Input multiplo PDF", "parameters": { "parameter": "documents" } } },
+    { "id": "merge", "type": "tool", "position": { "x": 260, "y": 120 }, "data": { "toolId": "pdf.merge", "toolVersion": "1.1.0", "label": "Unisci PDF", "parameters": { "mergePlan": { "files": [{ "filename": "pipeline-scan-page.pdf", "position": 1 }, { "filename": "pipeline-qr-page.pdf", "position": 2 }] } } } },
+    { "id": "qr", "type": "tool", "position": { "x": 520, "y": 120 }, "data": { "toolId": "pdf.qr.readAll", "toolVersion": "1.0.0", "label": "Leggi QR", "parameters": { "startPage": 1, "dpi": 200, "preprocess": "grayscale", "concurrency": 2 } } },
+    { "id": "if-qr", "type": "tool", "position": { "x": 780, "y": 120 }, "data": { "toolId": "logic.if", "toolVersion": "1.0.0", "label": "QR trovato?", "parameters": { "leftType": "string", "rightType": "string", "left": { "source": "node", "nodeId": "qr", "port": "codes", "path": ["0", "value"] }, "right": "PIPELINE-QR-TEST", "operator": "eq", "caseSensitive": true, "nullBehavior": "equalOnly" } } },
+    { "id": "delete", "type": "tool", "position": { "x": 1040, "y": 220 }, "data": { "toolId": "pdf.page.delete", "toolVersion": "1.0.0", "label": "Elimina pagina QR", "parameters": { "page": 2 } } },
+    { "id": "ocr", "type": "tool", "position": { "x": 1300, "y": 220 }, "data": { "toolId": "pdf.ocr", "toolVersion": "1.1.0", "label": "OCR", "parameters": { "from": 1, "languages": ["eng"], "dpi": 200, "skipExistingText": false, "searchableOverlay": true, "includeExtractedText": true } } },
+    { "id": "normalize", "type": "tool", "position": { "x": 1560, "y": 220 }, "data": { "toolId": "pdf.page.normalize", "toolVersion": "1.0.0", "label": "Normalizza A4", "parameters": { "size": "A4", "orientation": "portrait", "tolerancePercent": 2, "mode": "SCALE_CONTENT", "anchor": "CENTER", "pageScope": "ALL" } } },
+    { "id": "pdfa", "type": "tool", "position": { "x": 1820, "y": 220 }, "data": { "toolId": "pdf.convert.pdfa", "toolVersion": "1.0.0", "label": "Verifica PDF/A", "parameters": { "target": "PDF/A-2b" } } },
+    { "id": "output", "type": "tool", "position": { "x": 2080, "y": 220 }, "data": { "toolId": "pdf.output", "toolVersion": "1.0.0", "label": "Output PDF", "parameters": { "filenameTemplate": "pipeline-result.pdf", "collisionPolicy": "rename", "contentType": "application/pdf" } } },
+    { "id": "fallback", "type": "tool", "position": { "x": 1040, "y": 20 }, "data": { "toolId": "output.pdf", "toolVersion": "1.0.0", "label": "Output se QR assente", "parameters": { "filename": "pipeline-no-qr.pdf" } } }
+  ],
+  "edges": [
+    { "id": "input-merge", "source": "input", "target": "merge", "sourceHandle": "pdfs", "targetHandle": "pdfs", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "merge-qr", "source": "merge", "target": "qr", "sourceHandle": "pdf", "targetHandle": "pdf", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "qr-if", "source": "qr", "target": "if-qr", "sourceHandle": "success", "targetHandle": "run", "type": "batch", "data": { "kind": "control", "routing": "smoothstep", "label": "success" } },
+    { "id": "merge-delete", "source": "merge", "target": "delete", "sourceHandle": "pdf", "targetHandle": "pdf", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "if-delete", "source": "if-qr", "target": "delete", "sourceHandle": "true", "targetHandle": "run", "type": "batch", "data": { "kind": "control", "routing": "smoothstep", "label": "true" } },
+    { "id": "if-fallback", "source": "if-qr", "target": "fallback", "sourceHandle": "false", "targetHandle": "run", "type": "batch", "data": { "kind": "control", "routing": "smoothstep", "label": "false" } },
+    { "id": "merge-fallback", "source": "merge", "target": "fallback", "sourceHandle": "pdf", "targetHandle": "pdf", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "delete-ocr", "source": "delete", "target": "ocr", "sourceHandle": "pdf", "targetHandle": "pdf", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "ocr-normalize", "source": "ocr", "target": "normalize", "sourceHandle": "pdf", "targetHandle": "pdf", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "normalize-pdfa", "source": "normalize", "target": "pdfa", "sourceHandle": "pdf", "targetHandle": "pdf", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } },
+    { "id": "pdfa-output", "source": "pdfa", "target": "output", "sourceHandle": "pdf", "targetHandle": "document", "type": "batch", "data": { "kind": "data", "routing": "smoothstep" } }
+  ],
+  "viewport": { "x": 0, "y": 0, "zoom": 0.7 },
+  "apiParameters": [
+    { "name": "documents", "type": "pdf-list", "description": "I PDF di input nell'ordine dichiarato dal piano merge.", "required": true }
+  ]
+}

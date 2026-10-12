@@ -1,0 +1,50 @@
+{
+  "name": "pdf-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "tsx --test src/lib/admin-service-health.test.ts src/lib/batch-run-input.test.ts src/lib/batch-graph.test.ts src/lib/api-schema.test.ts src/lib/blocks/registry.test.ts src/lib/blocks/bindings.test.ts src/lib/blocks/inspector.test.ts src/lib/blocks/compiler.test.ts src/lib/blocks/logic-if.test.ts src/lib/blocks/condition-group.test.ts src/lib/blocks/integration-fixture.test.ts src/lib/hmac.test.ts src/lib/public-api-security.test.ts src/lib/schemas/batch-draft-export.test.ts src/lib/batch-drafts.integration.test.ts src/lib/workflows/schemas.test.ts src/lib/workflows/publication.test.ts src/lib/workflows/crud.integration.test.ts",
+    "test:e2e": "cd worker && python tests/e2e_local.py",
+    "docs:blocks": "tsx scripts/generate-block-catalog.ts",
+    "typecheck": "tsc --noEmit",
+    "test:worker": "cd worker && python -m unittest discover -s tests -v",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1149.0",
+    "@aws-sdk/s3-request-presigner": "^3.1149.0",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.117.3",
+    "@xyflow/react": "^12.12.0",
+    "lucide-react": "^1.55.0",
+    "next": "^16.4.0",
+    "pg": "^8.16.3",
+    "pillow": "^0.0.9",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.4.0",
+    "prisma": "^7.10.0",
+    "tailwindcss": "^4.1.18",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
