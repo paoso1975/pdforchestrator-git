@@ -11,6 +11,6 @@ export async function GET(request: Request, context: Context) {
     const executionId = uuidSchema.parse((await context.params).executionId);
     const result = await executionForRequest(executionId, request);
     if (result.response) return result.response;
-    return NextResponse.json({ ...result.execution, events: result.execution.events });
+    return NextResponse.json({ ...result.execution, events: [...result.execution.events].reverse() });
   } catch (error) { return validationError(error); }
 }

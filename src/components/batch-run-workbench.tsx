@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleAlert, Download, File, LoaderCircle, Play, UploadCloud } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, CheckCircle2, CircleAlert, Copy, Download, File, LoaderCircle, Play, UploadCloud } from "lucide-react";
 import { buildBatchRunRequest, getBatchRunFields, missingRequiredRunInputs, type RunInputField } from "@/lib/batch-run-input";
+import { buildExecutionLog, executionLogPlainText, type ExecutionLogEvent, type ExecutionLogStep } from "@/lib/execution-log";
 
 export type RunnableBatch = {
   id: string;
@@ -12,10 +13,11 @@ export type RunnableBatch = {
   version: number;
   inputSchema: unknown;
   outputSchema: unknown;
+  graph: unknown;
 };
 
 type UploadedPdf = { id: string; filename: string; size: number };
-type ExecutionState = { id: string; status: string; progress: number; currentStepId?: string | null; error?: unknown; output?: unknown };
+type ExecutionState = { id: string; status: string; progress: number; currentStepId?: string | null; error?: unknown; output?: unknown; input?: unknown; createdAt?: string; startedAt?: string | null; completedAt?: string | null; events?: ExecutionLogEvent[]; steps?: ExecutionLogStep[]; batch?: { name?: string }; batchVersion?: { version?: number; graph?: unknown } };
 type OutputFile = { id: string; filename: string; mimeType: string; sizeBytes: string; sha256: string; downloadUrl: string; expiresIn: number };
 
 function errorMessage(value: unknown, fallback: string) {
@@ -45,6 +47,10 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
   const [run, setRun] = useState<ExecutionState | null>(null);
   const [outputs, setOutputs] = useState<OutputFile[]>([]);
   const [pollInterval, setPollInterval] = useState(2500);
+  const [logCopied, setLogCopied] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+  const executionLog = useMemo(() => run ? buildExecutionLog(run, batch?.graph) : [], [run, batch?.graph]);
+  const executionLogText = useMemo(() => executionLogPlainText(executionLog), [executionLog]);
 
   useEffect(() => {
     const defaults = Object.fromEntries(fields.flatMap((field) => field.defaultValue === undefined ? [] : [[field.name, field.defaultValue]]));
@@ -184,7 +190,7 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
       });
       const data = await response.json() as ExecutionState & { error?: string; issues?: Array<{ message?: string }> };
       if (!response.ok) throw new Error(data.issues?.map((issue) => issue.message).filter(Boolean).join(" ") || data.error || "Impossibile avviare il batch.");
-      setRun(data);
+      setRun({ ...data, batch: { name: batch.name }, batchVersion: { version: batch.version, graph: batch.graph } });
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "Errore durante l’avvio dell’esecuzione.");
     } finally {
@@ -197,7 +203,25 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
     const response = await fetch(`/api/executions/${encodeURIComponent(run.id)}/cancel`, { method: "POST" });
     const data = await response.json() as ExecutionState & { error?: string };
     if (!response.ok) { setNotice(data.error ?? "Impossibile annullare il job."); return; }
-    setRun(data);
+    setRun((current) => current ? { ...current, ...data, events: current.events, steps: current.steps, batch: current.batch, batchVersion: current.batchVersion } : data);
+  }
+
+  async function copyExecutionLog() {
+    try {
+      const html = logRef.current?.innerHTML ?? "";
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write && html) {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/html": new Blob([`<div>${html}</div>`], { type: "text/html" }),
+          "text/plain": new Blob([executionLogText], { type: "text/plain" }),
+        })]);
+      } else {
+        await navigator.clipboard.writeText(executionLogText);
+      }
+      setLogCopied(true);
+      window.setTimeout(() => setLogCopied(false), 1800);
+    } catch {
+      setNotice("Non è stato possibile copiare il log. Verifica i permessi degli appunti del browser.");
+    }
   }
 
   if (!batches.length) return <section className="rounded-xl border border-[#293744] bg-[#101923] p-8 text-center"><p className="text-sm font-medium">Nessun batch pubblicato disponibile</p><p className="mt-2 text-xs text-slate-500">Servono un batch pubblicato e un ruolo OWNER, ADMIN o OPERATOR nell’organizzazione.</p></section>;
@@ -239,6 +263,13 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
           <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500"><span>{run.currentStepId ? `Step: ${run.currentStepId}` : isTerminal(run.status) ? "Elaborazione terminata" : "In coda o in elaborazione"}</span><span>{run.progress ?? 0}%</span></div>
           {!isTerminal(run.status) && <div className="mt-3 flex items-center justify-between"><button onClick={() => void cancelExecution()} className="text-[10px] text-rose-300 hover:text-rose-200">Annulla job</button><label className="flex items-center gap-2 text-[10px] text-slate-500">Polling<select value={pollInterval} onChange={(event) => setPollInterval(Number(event.target.value))} className="rounded border border-[#293744] bg-[#0b141d] px-2 py-1 text-[10px] text-slate-300"><option value={1500}>1,5 s</option><option value={2500}>2,5 s</option><option value={5000}>5 s</option><option value={10000}>10 s</option></select></label></div>}
           {!isTerminal(run.status) && <p className="mt-4 flex items-center gap-2 text-[10px] text-slate-500"><LoaderCircle size={13} className="animate-spin"/>Il job è asincrono; questa pagina aggiorna lo stato via HTTP.</p>}
+          <div className="mt-5 border-t border-[#25313c] pt-4">
+            <div className="flex items-center justify-between gap-2"><div><h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Log dettagliato del job</h3><p className="mt-1 text-[9px] text-slate-600">Timestamp, stati, input, output e variabili registrati dal worker.</p></div><button type="button" onClick={() => void copyExecutionLog()} disabled={!executionLog.length} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#34465b] px-2.5 py-1.5 text-[10px] text-[#a9c8f6] transition hover:bg-[#15243a] disabled:opacity-40" aria-label="Copia il log dettagliato">{logCopied ? <Check size={12}/> : <Copy size={12}/>} {logCopied ? "Copiato" : "Copia"}</button></div>
+            <div ref={logRef} role="textbox" aria-label="Log RTF di avanzamento del batch" aria-readonly="true" tabIndex={0} className="mt-3 max-h-[380px] min-h-28 overflow-auto whitespace-pre-wrap rounded-lg border border-[#263541] bg-[#0b141d] p-3 text-[10px] leading-5 text-slate-300">
+              {executionLog.map((entry) => <article key={entry.id} className="mb-4 last:mb-0"><div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5"><strong className="font-semibold text-[#c6d9f5]">{entry.heading}</strong><time className="font-mono text-[9px] text-slate-600">{entry.timestamp ? new Date(entry.timestamp).toLocaleString("it-IT", { dateStyle: "short", timeStyle: "medium" }) : "Timestamp non disponibile"}</time></div><p className="mt-0.5 text-[9px] text-slate-400">Stato: <u className="decoration-[#7eafff] underline-offset-2">{entry.state}</u></p>{entry.details.map((detail) => <div key={`${entry.id}:${detail.label}`} className="mt-1"><span className="font-medium text-slate-400">{detail.label}:</span><pre className="mt-0.5 overflow-x-auto rounded bg-[#081019] p-2 font-mono text-[9px] leading-4 text-slate-300">{detail.value}</pre></div>)}</article>)}
+              {!executionLog.length && <p className="text-[10px] text-slate-600">In attesa dei dati persistenti del job…</p>}
+            </div>
+          </div>
           {run.status === "FAILED" && <pre className="mt-4 max-h-32 overflow-auto rounded-lg border border-red-900/40 bg-red-950/20 p-3 text-[10px] text-red-200">{JSON.stringify(run.error ?? { message: "Il worker ha segnalato un errore." }, null, 2)}</pre>}
           {outputs.length > 0 ? <div className="mt-4 space-y-2">{outputs.map((file) => <article key={file.id} className="flex items-center gap-3 rounded-lg border border-[#293744] bg-[#0d1720] p-3"><File size={16} className="shrink-0 text-[#93bcff]"/><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{file.filename}</p><p className="mt-1 text-[10px] text-slate-500">{file.mimeType} · {formatBytes(Number(file.sizeBytes))}</p></div><a href={file.downloadUrl} download={file.filename} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#36455b] px-2.5 py-2 text-[10px] text-[#8dafe2] hover:bg-[#131f30]"><Download size={13}/>Scarica</a></article>)}</div> : ["COMPLETED", "SUCCEEDED"].includes(run.status) ? <p className="mt-4 flex items-center gap-2 text-xs text-amber-200"><CheckCircle2 size={15}/>Esecuzione completata senza artifact PDF registrati.</p> : null}
           {run.output !== undefined && <><h3 className="mt-5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dati output</h3><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-[#0b141d] p-3 text-[10px] leading-5 text-slate-300">{JSON.stringify(run.output, null, 2)}</pre></>}

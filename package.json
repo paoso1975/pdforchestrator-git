@@ -7,7 +7,7 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "tsx --test src/lib/admin-service-health.test.ts src/lib/batch-run-input.test.ts src/lib/batch-graph.test.ts src/lib/batch-editor-state.test.ts src/lib/api-schema.test.ts src/lib/blocks/registry.test.ts src/lib/blocks/bindings.test.ts src/lib/blocks/inspector.test.ts src/lib/blocks/compiler.test.ts src/lib/blocks/logic-if.test.ts src/lib/blocks/condition-group.test.ts src/lib/blocks/integration-fixture.test.ts src/lib/hmac.test.ts src/lib/public-api-security.test.ts src/lib/schemas/batch-draft-export.test.ts src/lib/batch-drafts.integration.test.ts src/lib/workflows/schemas.test.ts src/lib/workflows/publication.test.ts src/lib/workflows/crud.integration.test.ts",
+    "test": "tsx --test src/lib/admin-service-health.test.ts src/lib/batch-run-input.test.ts src/lib/batch-graph.test.ts src/lib/batch-editor-state.test.ts src/lib/execution-log.test.ts src/lib/api-schema.test.ts src/lib/blocks/registry.test.ts src/lib/blocks/bindings.test.ts src/lib/blocks/inspector.test.ts src/lib/blocks/compiler.test.ts src/lib/blocks/logic-if.test.ts src/lib/blocks/condition-group.test.ts src/lib/blocks/integration-fixture.test.ts src/lib/hmac.test.ts src/lib/public-api-security.test.ts src/lib/schemas/batch-draft-export.test.ts src/lib/batch-drafts.integration.test.ts src/lib/workflows/schemas.test.ts src/lib/workflows/publication.test.ts src/lib/workflows/crud.integration.test.ts",
     "test:e2e": "cd worker && python tests/e2e_local.py",
     "docs:blocks": "tsx scripts/generate-block-catalog.ts",
     "typecheck": "tsc --noEmit",

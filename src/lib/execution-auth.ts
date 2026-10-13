@@ -15,7 +15,12 @@ export async function requireWorker(request: Request) {
 
 export async function executionForRequest(executionId: string, request: Request) {
   const userId = await getAuthenticatedUserId();
-  const include = { steps: { orderBy: { createdAt: "asc" as const } }, events: { orderBy: { createdAt: "asc" as const }, take: 100 } };
+  const include = {
+    steps: { orderBy: { createdAt: "asc" as const } },
+    events: { orderBy: { createdAt: "desc" as const }, take: 500 },
+    batch: { select: { name: true } },
+    batchVersion: { select: { version: true, graph: true } },
+  };
   let execution = userId ? await prisma.batchExecution.findFirst({ where: { id: executionId, organization: { memberships: { some: { userId } } } }, include }) : null;
   if (!execution) {
     const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];

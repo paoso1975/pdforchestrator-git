@@ -21,7 +21,7 @@ export default async function ExecuteBatchPage() {
       organizationId: true,
       name: true,
       slug: true,
-      activeVersion: { select: { version: true, inputSchema: true, outputSchema: true, publishedAt: true } },
+      activeVersion: { select: { version: true, inputSchema: true, outputSchema: true, graph: true, publishedAt: true } },
     },
     orderBy: [{ name: "asc" }, { updatedAt: "desc" }],
   });
@@ -34,6 +34,7 @@ export default async function ExecuteBatchPage() {
     version: batch.activeVersion.version,
     inputSchema: batch.activeVersion.inputSchema,
     outputSchema: batch.activeVersion.outputSchema,
+    graph: batch.activeVersion.graph,
   }] : []);
 
   return (
