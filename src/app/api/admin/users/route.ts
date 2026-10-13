@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isCurrentUserAdmin } from "@/lib/admin-auth";
-import { toManagedUser } from "@/lib/admin-users";
+import { syncProfile, toManagedUser } from "@/lib/admin-users";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";

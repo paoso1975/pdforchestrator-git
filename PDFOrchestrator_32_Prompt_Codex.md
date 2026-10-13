@@ -437,3 +437,10 @@ CRITERI DI ACCETTAZIONE: l implementazione è persistente, tipizzata, testata, c
 Crea una pagina dove selezionando il file batch pubblicato, compaia in una prima colonna a sinistra il dettaglio json della chiamata per eseguire il batch; nella colonna centrale i campi richiesti come input per l'esecuzione dei files (se ci sono files singoli o multipli abilitare l'upload dei documenti su Cubbit e se sono multipli creare il pdf list), nella terza e ultima colonna a destra elencare i dati di output, se l'output sono uno o più files abilita il download.
 
 # **
+
+
+# ** Prompt 35 - Togli salvataggio automatico script **
+Sei Codex in VS Code nel repository Next.js di PDFOrchestrator. Prima ispeziona package.json, struttura src/app, Prisma, auth, API e worker esistenti. Non sovrascrivere funzioni funzionanti; riusa convenzioni, dipendenze e librerie già installate. Implementa realmente, non solo pseudocodice. Se mancano decisioni architetturali scegli soluzioni modulari e documentale. Mantieni TypeScript strict, validazione Zod, RBAC e multi-tenant se presenti, transazioni dove necessarie. Non eseguire codice utente dinamico (eval, Function, JS arbitrario). Scrivi test automatici, esegui lint/typecheck/test disponibili e riferisci file cambiati, migrazioni, comandi e limiti.
+/dashboard/batches/[id]]/edit togli il salvataggio automatico ad ogni modifica, quando viene modificato qualcosa nello script colora il pulsante salva di blu più evidente, quando si esce senza salvare fai comparire il popup che chiede la conferma di non salvare oppure di salvare. Mantieni la storia delle revisioni. Aggiungi anche il pulsante "Rinomina" che fa apparire un popup per rinominare il titolo del batch. Nella barra in alto in fondo a destra aggiungi il pulsante "Esci" che torna alla pagina con l'elenco dei batch /dashboard/batches.
+CRITERI DI ACCETTAZIONE: l implementazione è persistente, tipizzata, testata, con errori leggibili e nessun mock nel percorso produttivo.
+

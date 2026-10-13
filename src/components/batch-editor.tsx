@@ -13,6 +13,7 @@ import {
 import Link from "next/link";
 import { batchDraftExportSchema, isWithinBatchDraftLimit, MAX_BATCH_DRAFT_BYTES } from "@/lib/schemas/batch-draft-export";
 import { batchGraphSchema } from "@/lib/schemas/api";
+import { batchEditorSnapshotKey, hasUnsavedBatchEditorChanges } from "@/lib/batch-editor-state";
 import { useRouter } from "next/navigation";
 import { autoLayout, canConnect, createNode, insertNodeOnBatchEdge, makeBatchEdge, reconnectBatchEdge, serializeGraph, validateGraph, validateStructure, type ApiParameter, type BatchEdge, type BatchNode, type BatchVariable, type BatchViewport } from "@/lib/batch-graph";
 import { latestBlockRegistry, getBlockDefinition, type BlockPort, type BlockPortType } from "@/lib/blocks/registry";
@@ -77,27 +78,32 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
   const [versions, setVersions] = useState<BatchVersion[]>([]);
   const [panel, setPanel] = useState<"issues" | "parameters" | "test" | null>(null);
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
-  const [issues, setIssues] = useState<string[]>([]);
   const [saveState, setSaveState] = useState("Salvato");
+  const [savedSnapshotKey, setSavedSnapshotKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initialized, setInitialized] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState(initialBatch.name);
+  const [exitDialogOpen, setExitDialogOpen] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [draftRevision, setDraftRevision] = useState<number | null>(null);
   const [engineNotice, setEngineNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [undoStack, setUndoStack] = useState<Snapshot[]>([]);
   const [redoStack, setRedoStack] = useState<Snapshot[]>([]);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
-  const queuedSaveRef = useRef(false);
-  const saveHandlerRef = useRef<((publish?: boolean) => Promise<void>) | null>(null);
-  const initialized = useRef(false);
-  const latest = useRef({ nodes, edges, parameters, variables, batch, draftRevision });
-  useEffect(() => { latest.current = { nodes, edges, parameters, variables, batch, draftRevision }; }, [nodes, edges, parameters, variables, batch, draftRevision]);
+  const savedSnapshotRef = useRef<string | null>(null);
+  const latest = useRef({ nodes, edges, viewport, parameters, variables, batch, draftRevision });
+  useEffect(() => { latest.current = { nodes, edges, viewport, parameters, variables, batch, draftRevision }; }, [nodes, edges, viewport, parameters, variables, batch, draftRevision]);
 
   const selected = nodes.find((node) => node.id === selectedNode) ?? null;
   const selectedTool = selected ? getBlockDefinition(selected.data.toolId, selected.data.toolVersion) : null;
   const apiDefinition = useMemo(() => generateApiDefinition(nodes, parameters), [nodes, parameters]);
+  const issues = useMemo(() => initialized ? [...validateGraph(nodes, edges), ...apiDefinition.issues.map((issue) => issue.message)] : [], [initialized, nodes, edges, apiDefinition]);
+  const currentSnapshotKey = useMemo(() => batchEditorSnapshotKey({ nodes, edges, viewport, variables, parameters, batchName: batch.name }), [nodes, edges, viewport, variables, parameters, batch.name]);
+  const isDirty = initialized && hasUnsavedBatchEditorChanges(savedSnapshotKey, currentSnapshotKey);
   const filteredTools = useMemo(() => latestBlockRegistry.filter((tool) =>
     (activeCategory === "all" || tool.category === activeCategory) &&
     `${tool.label} ${tool.type} ${tool.description}`.toLowerCase().includes(search.toLowerCase()),
@@ -108,17 +114,17 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
     setRedoStack([]);
   }, []);
 
-  const save = useCallback(async (publish = false) => {
-    if (savingRef.current) { queuedSaveRef.current = true; return; }
+  const save = useCallback(async (publish = false): Promise<boolean> => {
+    if (savingRef.current) return false;
     const state = latest.current;
     const contract = generateApiDefinition(state.nodes, state.parameters);
     const validation = [...validateGraph(state.nodes, state.edges), ...contract.issues.map((issue) => issue.message)];
     if (publish && validation.length) {
-      setIssues(validation); setPanel("issues"); setSaveState("Correggi gli errori prima di pubblicare"); return;
+      setPanel("issues"); setSaveState("Correggi gli errori prima di pubblicare"); return false;
     }
     savingRef.current = true; setSaving(true); setSaveState(publish ? "Pubblicazione…" : "Salvataggio…");
     try {
-      const serialized = serializeGraph(state.nodes, state.edges, viewport, state.variables);
+      const serialized = serializeGraph(state.nodes, state.edges, state.viewport, state.variables);
       const inputSchema = contract.inputSchema;
       const outputSchema = makeOutputSchema();
       const response = publish ? await fetch(`/api/batches/${batchId}/versions`, {
@@ -130,7 +136,7 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
       });
       const result = await response.json() as BatchVersion & { error?: string; updatedAt?: string };
       if (response.status === 409 || response.status === 412) {
-        setSaveState("Conflitto: batch modificato altrove"); setEngineNotice("Il server ha rilevato una modifica concorrente. Ricarica la pagina per continuare."); return;
+        setSaveState("Conflitto: batch modificato altrove"); setEngineNotice("Il server ha rilevato una modifica concorrente. Ricarica la pagina per continuare."); return false;
       }
       if (!response.ok) throw new Error(result.error ?? "Salvataggio non riuscito.");
       const refreshed = await fetch(`/api/batches/${batchId}`, { cache: "no-store" });
@@ -142,20 +148,90 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
       if (versionResponse.ok) setVersions(await versionResponse.json() as BatchVersion[]);
       if (publish) { setDraftRevision(null); latest.current.draftRevision = null; }
       else { setDraftRevision(result.revision ?? null); latest.current.draftRevision = result.revision ?? null; }
+      const persistedSnapshotKey = batchEditorSnapshotKey({ ...state, batchName: state.batch.name });
+      savedSnapshotRef.current = persistedSnapshotKey;
+      setSavedSnapshotKey(persistedSnapshotKey);
       setSaveState(publish ? `Pubblicata · v${result.version}` : "Tutte le modifiche salvate");
       if (publish) setBatch((current) => ({ ...current, status: "PUBLISHED" }));
+      return true;
     } catch (cause) {
       setSaveState("Errore di salvataggio"); setEngineNotice(cause instanceof Error ? cause.message : "Errore di rete.");
+      return false;
     } finally {
       savingRef.current = false; setSaving(false);
-      if (queuedSaveRef.current) {
-        queuedSaveRef.current = false;
-        window.setTimeout(() => { void saveHandlerRef.current?.(false); }, 0);
-      }
     }
-  }, [batchId, viewport]);
+  }, [batchId]);
 
-  useEffect(() => { saveHandlerRef.current = save; }, [save]);
+  const requestNavigation = useCallback((destination: string) => {
+    if (isDirty) {
+      setPendingNavigation(destination);
+      setExitDialogOpen(true);
+      return;
+    }
+    router.push(destination);
+  }, [isDirty, router]);
+
+  const duplicateBatch = useCallback(async (confirmed = false) => {
+    if (isDirty && !confirmed) {
+      setPendingNavigation("__duplicate__");
+      setExitDialogOpen(true);
+      return;
+    }
+    setEngineNotice("");
+    try {
+      const response = await fetch(`/api/batches/${batchId}/duplicate`, { method: "POST" });
+      const result = await response.json() as { id?: string; error?: string };
+      if (!response.ok || !result.id) throw new Error(result.error ?? "Impossibile duplicare il batch.");
+      router.push(`/dashboard/batches/${result.id}/edit`);
+    } catch (cause) { setEngineNotice(cause instanceof Error ? cause.message : "Errore di rete."); }
+  }, [batchId, isDirty, router]);
+
+  const saveAndNavigate = useCallback(async () => {
+    const destination = pendingNavigation ?? "/dashboard/batches";
+    const saved = await save(false);
+    if (!saved) return;
+    const current = latest.current;
+    const latestKey = batchEditorSnapshotKey({ ...current, batchName: current.batch.name });
+    if (latestKey === savedSnapshotRef.current) {
+      if (destination === "__duplicate__") await duplicateBatch(true);
+      else router.push(destination);
+    }
+    else {
+      setExitDialogOpen(false);
+      setPendingNavigation(null);
+      setEngineNotice("Sono state modificate altre impostazioni durante il salvataggio. Salvale prima di uscire.");
+    }
+  }, [duplicateBatch, pendingNavigation, router, save]);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const onDocumentClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin || url.href === window.location.href) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      setPendingNavigation(`${url.pathname}${url.search}${url.hash}`);
+      setExitDialogOpen(true);
+    };
+    window.document.addEventListener("click", onDocumentClick, true);
+    return () => window.document.removeEventListener("click", onDocumentClick, true);
+  }, [isDirty]);
 
   useEffect(() => {
     let active = true;
@@ -173,30 +249,38 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
         if (!active) return;
         setBatch(current); latest.current.batch = current; setVersions(loadedVersions);
         const draft = savedDraft ?? loadedVersions.find((version) => !version.publishedAt) ?? loadedVersions[0];
+        let loadedNodes: BatchNode[] = [];
+        let loadedEdges: BatchEdge[] = [];
+        let loadedVariables: BatchVariable[] = [];
+        let loadedParameters: ApiParameter[] = [];
+        let loadedViewport: BatchViewport = { x: 0, y: 0, zoom: 1 };
+        let loadedName = current.name;
         if (draft) {
           const graph = batchGraphSchema.parse(draft.graph);
-          setNodes(graph.nodes as BatchNode[]); setEdges(graph.edges as BatchEdge[]);
-          setVariables(graph.variables ?? []);
+          loadedNodes = graph.nodes as BatchNode[];
+          loadedEdges = graph.edges as BatchEdge[];
+          loadedVariables = graph.variables ?? [];
+          loadedName = savedDraft?.batchName ?? current.name;
+          setNodes(loadedNodes); setEdges(loadedEdges);
+          setVariables(loadedVariables);
           setDraftRevision(savedDraft?.revision ?? null);
           latest.current.draftRevision = savedDraft?.revision ?? null;
-          if (graph.viewport && Number.isFinite(graph.viewport.x) && Number.isFinite(graph.viewport.y) && Number.isFinite(graph.viewport.zoom)) setViewport(graph.viewport);
+          if (graph.viewport && Number.isFinite(graph.viewport.x) && Number.isFinite(graph.viewport.y) && Number.isFinite(graph.viewport.zoom)) loadedViewport = graph.viewport;
+          setViewport(loadedViewport);
           const input = draft.inputSchema as { properties?: Record<string, { type?: string; description?: string; default?: unknown; minimum?: number; maximum?: number }>; required?: string[] };
-          if (input.properties) setParameters(parametersFromSchema(draft.inputSchema));
+          if (input.properties) loadedParameters = parametersFromSchema(draft.inputSchema);
+          setParameters(loadedParameters);
         }
-        initialized.current = true;
+        if (loadedName !== current.name) setBatch({ ...current, name: loadedName });
+        const baseline = batchEditorSnapshotKey({ nodes: loadedNodes, edges: loadedEdges, viewport: loadedViewport, variables: loadedVariables, parameters: loadedParameters, batchName: loadedName });
+        savedSnapshotRef.current = baseline;
+        setSavedSnapshotKey(baseline);
+        setInitialized(true);
       } catch (cause) { setEngineNotice(cause instanceof Error ? cause.message : "Impossibile caricare il batch."); }
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
   }, [batchId, setEdges, setNodes]);
-
-  useEffect(() => {
-    if (!initialized.current || loading) return;
-    setIssues([...validateGraph(nodes, edges), ...apiDefinition.issues.map((issue) => issue.message)]); setSaveState("Modifiche non salvate");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { void save(false); }, 1100);
-    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [nodes, edges, parameters, variables, batch.name, loading, save, apiDefinition]);
 
   const addTool = useCallback((toolId: string, position: { x: number; y: number }) => {
     const node = createNode(toolId, position);
@@ -296,19 +380,9 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
       pushUndo(); setNodes(imported.graph.nodes as BatchNode[]); setEdges(imported.graph.edges as BatchEdge[]); setVariables(imported.graph.variables ?? []);
       if (imported.graph.viewport) setViewport(imported.graph.viewport);
       setParameters(parametersFromSchema(imported.inputSchema));
-      setBatch((current) => ({ ...current, name: imported.batchName })); setEngineNotice(""); setSaveState("Importato · salvataggio in corso");
+      setBatch((current) => ({ ...current, name: imported.batchName })); setEngineNotice(""); setSaveState("Importato · modifiche non salvate");
     } catch (cause) { setEngineNotice(cause instanceof Error ? cause.message : "File JSON non valido."); }
   };
-  const duplicateBatch = async () => {
-    setEngineNotice("");
-    try {
-      const response = await fetch(`/api/batches/${batchId}/duplicate`, { method: "POST" });
-      const result = await response.json() as { id?: string; error?: string };
-      if (!response.ok || !result.id) throw new Error(result.error ?? "Impossibile duplicare il batch.");
-      router.push(`/dashboard/batches/${result.id}/edit`);
-    } catch (cause) { setEngineNotice(cause instanceof Error ? cause.message : "Errore di rete."); }
-  };
-
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault(); setDragging(false);
     const toolId = event.dataTransfer.getData("application/pdf-orchestrator-tool");
@@ -320,14 +394,16 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
     <header className="z-20 flex h-[68px] shrink-0 items-center gap-4 border-b border-[#25313c] bg-[#0d151e] px-5">
       <Link href="/dashboard/batches" className="flex shrink-0 items-center gap-2 text-sm font-bold tracking-tight"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#17253a] text-[#6b9ae0]"><Sparkles size={16}/></span><span className="hidden sm:inline">PDF<span className="text-[#6997dc]">Orchestrator</span></span></Link>
       <span className="h-7 w-px bg-[#2a3742]" />
-      <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><input className="w-full max-w-sm truncate bg-transparent text-sm font-semibold text-slate-100 outline-none" value={batch.name} aria-label="Nome batch" onChange={(event) => setBatch((current) => ({ ...current, name: event.target.value }))} /><ChevronDown size={14} className="text-slate-500"/></div><div className="mt-0.5 flex items-center gap-2 text-[10px] text-slate-500"><span className={`h-1.5 w-1.5 rounded-full ${batch.status === "PUBLISHED" ? "bg-emerald-400" : "bg-amber-400"}`}/>{batch.status === "PUBLISHED" ? "Pubblicato" : "Bozza"}<span>·</span><span>v{versions[0]?.version ?? "—"}</span><span>·</span><span>rev {draftRevision ?? "—"}</span><span>·</span><span>{saveState}</span></div></div>
+      <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className="max-w-sm truncate text-sm font-semibold text-slate-100" title={batch.name}>{batch.name}</span><span className={`h-1.5 w-1.5 rounded-full ${batch.status === "PUBLISHED" ? "bg-emerald-400" : "bg-amber-400"}`}/></div><div className="mt-0.5 flex items-center gap-2 text-[10px] text-slate-500">{batch.status === "PUBLISHED" ? "Pubblicato" : "Bozza"}<span>·</span><span>v{versions[0]?.version ?? "—"}</span><span>·</span><span>rev {draftRevision ?? "—"}</span><span>·</span><span className={isDirty ? "text-[#7eafff]" : ""}>{saving ? "Salvataggio…" : isDirty ? "Modifiche non salvate" : saveState}</span></div></div>
       <div className="hidden items-center gap-1.5 lg:flex"><button onClick={undo} disabled={!undoStack.length} className="icon-btn" title="Annulla (Ctrl+Z)"><Undo2 size={16}/></button><button onClick={redo} disabled={!redoStack.length} className="icon-btn" title="Ripeti (Ctrl+Y)"><Redo2 size={16}/></button><button onClick={() => { pushUndo(); setNodes((current) => autoLayout(current, edges)); }} disabled={!nodes.length} className="icon-btn" title="Disponi automaticamente i nodi"><Sparkles size={15}/></button><button onClick={() => { const input = window.document.createElement("input"); input.type = "file"; input.accept = "application/json,.json"; input.onchange = () => { void importDraft(input.files?.[0]); }; input.click(); }} className="icon-btn" title="Importa draft JSON"><FileUp size={15}/></button><button onClick={exportDraft} className="icon-btn" title="Esporta draft JSON"><Download size={15}/></button></div>
-      <button onClick={() => { if (saveTimer.current) clearTimeout(saveTimer.current); void save(false); }} disabled={saving} className="editor-secondary"><Save size={14}/><span className="hidden sm:inline">Salva</span></button>
-      <button onClick={() => { setIssues([...validateGraph(nodes, edges), ...apiDefinition.issues.map((issue) => issue.message)]); setSelectedNode(null); setPanel("issues"); }} className="editor-secondary"><Check size={14}/><span className="hidden sm:inline">Valida</span></button>
+      <button onClick={() => { void save(false); }} disabled={saving || loading || !isDirty} className={isDirty ? "rounded-md border border-[#136EF9] bg-[#136EF9] px-3 py-2 text-xs font-semibold text-white shadow-[0_0_14px_rgba(19,110,249,0.35)] transition-colors hover:bg-[#0f5fdc] disabled:cursor-not-allowed disabled:opacity-50" : "editor-secondary"}><Save size={14}/><span className="hidden sm:inline">Salva</span></button>
+      <button onClick={() => { setRenameValue(batch.name); setRenameOpen(true); }} disabled={saving || loading} className="editor-secondary"><span>Rinomina</span></button>
+      <button onClick={() => { setSelectedNode(null); setPanel("issues"); }} className="editor-secondary"><Check size={14}/><span className="hidden sm:inline">Valida</span></button>
       <button onClick={() => { setPanel("test"); setMobilePanelOpen(true); }} className="editor-secondary"><FlaskConical size={14}/><span className="hidden md:inline">Testa</span></button>
       <button onClick={() => setMobilePanelOpen((open) => !open)} className="editor-secondary md:hidden"><Settings2 size={14}/></button>
-      <button onClick={() => { if (saveTimer.current) clearTimeout(saveTimer.current); void save(true); }} disabled={saving} className="editor-primary"><ArrowDownToLine size={14}/><span className="hidden sm:inline">Pubblica</span></button>
+      <button onClick={() => { void save(true); }} disabled={saving} className="editor-primary"><ArrowDownToLine size={14}/><span className="hidden sm:inline">Pubblica</span></button>
       <button onClick={() => void duplicateBatch()} className="editor-secondary" title="Duplica batch"><CopyPlus size={14}/><span className="hidden xl:inline">Duplica</span></button><Link href={`/dashboard/batches/${batchId}/versions`} className="editor-secondary"><Clock3 size={14}/><span className="hidden md:inline">Versioni</span></Link>
+      <button onClick={() => requestNavigation("/dashboard/batches")} className="editor-secondary"><span>Esci</span></button>
     </header>
 
     <div className="flex min-h-0 flex-1">
@@ -341,7 +417,7 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
       <main className="relative min-w-0 flex-1 bg-[#0b121a]">
         <div className="pointer-events-none absolute inset-0 z-[1] opacity-[.10]" style={{ backgroundImage: "radial-gradient(#8292a1 0.65px, transparent 0.65px)", backgroundSize: "20px 20px" }}/>
         <div onDrop={onDrop} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} className={`absolute inset-0 z-[2] ${dragging ? "ring-2 ring-inset ring-[#568ad8]" : ""}`}>
-          {loading ? <div className="flex h-full items-center justify-center text-xs text-slate-500"><LoaderCircle size={16} className="mr-2 animate-spin"/>Caricamento flusso…</div> : <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} edgesReconnectable snapToGrid snapGrid={[16, 16]} defaultViewport={viewport} onMoveEnd={(_, nextViewport) => { setViewport(nextViewport); if (initialized.current) { setSaveState("Modifiche non salvate"); if (saveTimer.current) clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => { void save(false); }, 1100); } }} onNodesChange={(changes) => { if (changes.some((change) => change.type === "remove")) pushUndo(); onNodesChange(changes); }} onEdgesChange={(changes) => { if (changes.some((change) => change.type === "remove")) pushUndo(); onEdgesChange(changes); }} onNodeDragStart={pushUndo} onConnect={onConnect} onReconnect={onReconnect} isValidConnection={(connection) => canConnect(connection, nodes, edges)} onEdgeContextMenu={(event, edge) => { event.preventDefault(); setEdgeContext({ id: edge.id, x: event.clientX, y: event.clientY }); }} onNodeClick={(_, node) => { setSelectedNode(node.id); setPanel(null); setMobilePanelOpen(true); }} onPaneClick={() => { setSelectedNode(null); setEdgeContext(null); }} onSelectionChange={({ nodes: selectedNodes }) => { if (selectedNodes.length) setSelectedNode(selectedNodes[0].id); }} fitView={viewport.zoom === 1 && viewport.x === 0 && viewport.y === 0} minZoom={0.2} maxZoom={1.6} deleteKeyCode={["Backspace", "Delete"]} multiSelectionKeyCode={["Shift", "Control", "Meta"]} proOptions={{ hideAttribution: true }}>
+          {loading ? <div className="flex h-full items-center justify-center text-xs text-slate-500"><LoaderCircle size={16} className="mr-2 animate-spin"/>Caricamento flusso…</div> : <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} edgesReconnectable snapToGrid snapGrid={[16, 16]} defaultViewport={viewport} onMoveEnd={(_, nextViewport) => { setViewport(nextViewport); }} onNodesChange={(changes) => { if (changes.some((change) => change.type === "remove")) pushUndo(); onNodesChange(changes); }} onEdgesChange={(changes) => { if (changes.some((change) => change.type === "remove")) pushUndo(); onEdgesChange(changes); }} onNodeDragStart={pushUndo} onConnect={onConnect} onReconnect={onReconnect} isValidConnection={(connection) => canConnect(connection, nodes, edges)} onEdgeContextMenu={(event, edge) => { event.preventDefault(); setEdgeContext({ id: edge.id, x: event.clientX, y: event.clientY }); }} onNodeClick={(_, node) => { setSelectedNode(node.id); setPanel(null); setMobilePanelOpen(true); }} onPaneClick={() => { setSelectedNode(null); setEdgeContext(null); }} onSelectionChange={({ nodes: selectedNodes }) => { if (selectedNodes.length) setSelectedNode(selectedNodes[0].id); }} fitView={viewport.zoom === 1 && viewport.x === 0 && viewport.y === 0} minZoom={0.2} maxZoom={1.6} deleteKeyCode={["Backspace", "Delete"]} multiSelectionKeyCode={["Shift", "Control", "Meta"]} proOptions={{ hideAttribution: true }}>
             <Background color="#556372" gap={20} size={1} variant={undefined}/><Controls position="bottom-left" showInteractive={false}/><MiniMap position="bottom-right" pannable zoomable nodeColor="#2c4160" maskColor="rgba(7,12,18,.72)"/>
           </ReactFlow>}
         </div>
@@ -356,8 +432,10 @@ function Editor({ batchId, initialBatch }: { batchId: string; initialBatch: Batc
       </aside>
     </div>
 
-    <footer className="z-10 flex min-h-[40px] shrink-0 items-center gap-3 border-t border-[#25313c] bg-[#0d151e] px-4 text-[10px]"><button onClick={() => setPanel(panel === "issues" ? null : "issues")} className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200"><span className={`h-1.5 w-1.5 rounded-full ${issues.length ? "bg-amber-400" : "bg-emerald-400"}`}/>{issues.length ? `${issues.length} problemi` : "Nessun problema"}<ChevronDown size={12}/></button><span className="text-slate-700">·</span><span className="text-slate-500">{nodes.length} nodi</span><span className="ml-auto text-slate-600">Salvataggio automatico · 1.1s</span><button onClick={() => setPanel("issues")} className="text-slate-500 hover:text-[#739cd9]">Log</button></footer>
+    <footer className="z-10 flex min-h-[40px] shrink-0 items-center gap-3 border-t border-[#25313c] bg-[#0d151e] px-4 text-[10px]"><button onClick={() => setPanel(panel === "issues" ? null : "issues")} className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200"><span className={`h-1.5 w-1.5 rounded-full ${issues.length ? "bg-amber-400" : "bg-emerald-400"}`}/>{issues.length ? `${issues.length} problemi` : "Nessun problema"}<ChevronDown size={12}/></button><span className="text-slate-700">·</span><span className="text-slate-500">{nodes.length} nodi</span><span className={`ml-auto ${isDirty ? "text-[#7eafff]" : "text-slate-600"}`}>{saving ? "Salvataggio…" : isDirty ? "Modifiche da salvare" : "Tutte le modifiche salvate"}</span><button onClick={() => setPanel("issues")} className="text-slate-500 hover:text-[#739cd9]">Log</button></footer>
     {panel === "issues" && <div className="absolute bottom-10 left-[248px] z-30 w-[min(500px,calc(100vw-300px))] rounded-xl border border-[#2a3945] bg-[#101a24] p-3 shadow-2xl max-sm:left-16"><div className="flex items-center justify-between"><p className="text-xs font-semibold">Validazione grafo</p><button onClick={() => setPanel(null)}><X size={13}/></button></div>{issues.length ? <ul className="mt-2 space-y-1.5">{issues.map((issue) => <li key={issue} className="flex gap-2 text-[10px] text-amber-200"><AlertCircle size={12} className="shrink-0"/>{issue}</li>)}</ul> : <p className="mt-2 text-[10px] text-emerald-300">Nessun errore di configurazione.</p>}{engineNotice && <p className="mt-2 border-t border-[#263541] pt-2 text-[10px] text-amber-200">{engineNotice}</p>}</div>}
+    {renameOpen && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setRenameOpen(false); }}><section role="dialog" aria-modal="true" aria-labelledby="rename-batch-title" className="w-full max-w-md rounded-xl border border-[#2b3a49] bg-[#101a24] p-5 shadow-2xl"><h2 id="rename-batch-title" className="text-base font-semibold text-white">Rinomina batch</h2><p className="mt-1 text-xs text-slate-400">Il nuovo nome sarà salvato insieme alle modifiche del draft.</p><form onSubmit={(event) => { event.preventDefault(); const name = renameValue.trim(); if (!name || name.length > 120) return; setBatch((current) => ({ ...current, name })); setRenameOpen(false); }}><label className="mt-4 block text-xs text-slate-300" htmlFor="rename-batch-input">Nome batch</label><input id="rename-batch-input" autoFocus maxLength={120} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} className="mt-1 w-full rounded-md border border-[#334455] bg-[#0a1118] px-3 py-2 text-sm text-white outline-none focus:border-[#136EF9]"/><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setRenameOpen(false)} className="editor-secondary">Annulla</button><button type="submit" disabled={!renameValue.trim()} className="editor-primary">Applica nome</button></div></form></section></div>}
+    {exitDialogOpen && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4"><section role="alertdialog" aria-modal="true" aria-labelledby="unsaved-title" aria-describedby="unsaved-description" className="w-full max-w-md rounded-xl border border-[#2b3a49] bg-[#101a24] p-5 shadow-2xl"><h2 id="unsaved-title" className="text-base font-semibold text-white">Modifiche non salvate</h2><p id="unsaved-description" className="mt-2 text-sm leading-6 text-slate-400">Vuoi salvare le modifiche prima di uscire? Se esci senza salvare, il draft corrente non verrà aggiornato.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button onClick={() => { setExitDialogOpen(false); setPendingNavigation(null); }} className="editor-secondary">Resta qui</button><button onClick={() => { const destination = pendingNavigation ?? "/dashboard/batches"; setExitDialogOpen(false); setPendingNavigation(null); if (destination === "__duplicate__") void duplicateBatch(true); else router.push(destination); }} className="editor-secondary">Esci senza salvare</button><button onClick={() => void saveAndNavigate()} disabled={saving} className="editor-primary">{saving ? "Salvataggio…" : "Salva ed esci"}</button></div></section></div>}
   </div>;
 }
 
