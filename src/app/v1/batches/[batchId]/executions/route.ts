@@ -8,6 +8,7 @@ import { applySchemaDefaults } from "@/lib/api-schema";
 import { canonicalJson, parseIdempotencyKey, positiveIntegerConfig, publicBatchSlugSchema } from "@/lib/public-api-security";
 import { verifyStoredPdfUpload } from "@/lib/upload-verification";
 import { credentialCanAccessBatchVersion } from "@/lib/credential-scopes";
+import { buildExecutionRequestString, safeExecutionLogValue } from "@/lib/execution-audit";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ batchId: string }> };
@@ -85,6 +86,8 @@ export async function POST(request: Request, context: Context) {
     if (idempotencyKey) { const previous = await prisma.batchExecution.findFirst({ where: { organizationId: auth.credential.organizationId, credentialId: auth.credential.id, idempotencyKey } }); if (previous) return previous.batchId === batchId && previous.batchVersionId === batchVersion.id && canonicalJson(previous.input) === canonicalJson(executionInput) ? NextResponse.json({ id: previous.id, runId: previous.id, status: previous.status, statusUrl: new URL(request.url).pathname.startsWith("/api/public/v1/") ? `/api/public/v1/runs/${previous.id}` : `/v1/executions/${previous.id}` }, { status: 200 }) : NextResponse.json({ error: "Chiave idempotenza già usata." }, { status: 409 }); }
     const concurrency = positiveIntegerConfig(process.env.PFO_MAX_CONCURRENT_JOBS, 10);
     const batchVersionId = batchVersion.id;
+    const requestPath = new URL(request.url).pathname + (requestedVersionId ? `?versionId=${encodeURIComponent(requestedVersionId)}` : "");
+    const executionString = buildExecutionRequestString({ method: request.method, path: requestPath, origin: "API_CREDENTIAL", requestId: auth.requestId, idempotencyKey, input: executionInput });
     const outcome = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "ApiCredential" WHERE "id" = ${auth.credential.id}::uuid FOR UPDATE`;
       if (idempotencyKey) {
@@ -93,7 +96,21 @@ export async function POST(request: Request, context: Context) {
       }
       const active = await tx.batchExecution.count({ where: { organizationId: auth.credential.organizationId, credentialId: auth.credential.id, status: { in: ["QUEUED", "RUNNING"] } } });
       if (active >= concurrency) return { kind: "limit" as const };
-      const created = await tx.batchExecution.create({ data: { organizationId: auth.credential.organizationId, batchId, batchVersionId, credentialId: auth.credential.id, input: executionInput as Prisma.InputJsonValue, ...(idempotencyKey ? { idempotencyKey } : {}), status: "QUEUED", events: { create: { type: "QUEUED", payload: { source: "public_hmac" } } } }, select: { id: true, status: true, createdAt: true } });
+      const created = await tx.batchExecution.create({ data: {
+        organizationId: auth.credential.organizationId,
+        batchId,
+        batchVersionId,
+        credentialId: auth.credential.id,
+        input: executionInput as Prisma.InputJsonValue,
+        origin: "API_CREDENTIAL",
+        requestId: auth.requestId,
+        requestMethod: request.method,
+        requestPath,
+        executionString,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        status: "QUEUED",
+        events: { create: { type: "QUEUED", payload: { source: "API_CREDENTIAL", requestId: auth.requestId, requestMethod: request.method, requestPath, idempotencyKey, input: safeExecutionLogValue(executionInput) } as Prisma.InputJsonValue } },
+      }, select: { id: true, status: true, createdAt: true } });
       await tx.auditEvent.create({ data: { organizationId: auth.credential.organizationId, action: "public.batch_run.queued", resourceType: "BatchExecution", resourceId: created.id, requestId: auth.requestId, metadata: { batchId, batchVersionId, credentialId: auth.credential.id, idempotent: Boolean(idempotencyKey) } } });
       if (files.length) {
         const retentionDays = Math.max(1, Number.parseInt(process.env.PFO_RETENTION_DAYS ?? "30", 10) || 30);

@@ -4,6 +4,7 @@ import { HeadObjectCommand } from "@aws-sdk/client-s3";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getAuthenticatedUserId } from "@/lib/api-auth";
+import { buildExecutionRequestString, executionRequestId, safeExecutionLogValue } from "@/lib/execution-audit";
 import { prisma } from "@/lib/prisma";
 import { createStorageClient } from "@/lib/storage";
 import { validationError } from "@/lib/validation";
@@ -77,7 +78,26 @@ export async function POST(request: NextRequest, context: Context) {
         return NextResponse.json(previous, { status: 200 });
       }
     }
-    const created = await prisma.batchExecution.create({ data: { organizationId: batch.organizationId, batchId: batch.id, batchVersionId: batch.activeVersion.id, status: "QUEUED", input: body.input as Prisma.InputJsonValue, ...(credentialId ? { credentialId } : {}), ...(idempotencyKey ? { idempotencyKey } : {}), events: { create: { type: "QUEUED", payload: { source: credentialId ? "api_credential" : "session" } } } } });
+    const origin = credentialId ? "API_CREDENTIAL" : "DASHBOARD_SESSION";
+    const requestId = executionRequestId(request.headers.get("x-request-id"));
+    const requestPath = request.nextUrl.pathname;
+    const executionString = buildExecutionRequestString({ method: request.method, path: requestPath, origin, requestId, idempotencyKey, input: body.input });
+    const created = await prisma.batchExecution.create({ data: {
+      organizationId: batch.organizationId,
+      batchId: batch.id,
+      batchVersionId: batch.activeVersion.id,
+      status: "QUEUED",
+      input: body.input as Prisma.InputJsonValue,
+      origin,
+      requestId,
+      requestMethod: request.method,
+      requestPath,
+      executionString,
+      ...(membership ? { requestedByUserId: userId! } : {}),
+      ...(credentialId ? { credentialId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      events: { create: { type: "QUEUED", payload: { source: origin, requestId, requestMethod: request.method, requestPath, idempotencyKey, input: safeExecutionLogValue(body.input) } as Prisma.InputJsonValue } },
+    } });
     return NextResponse.json(created, { status: 202 });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return NextResponse.json({ error: "Chiave di idempotenza già usata." }, { status: 409 });

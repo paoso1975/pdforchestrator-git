@@ -39,6 +39,11 @@ enum StepExecutionStatus {
   SKIPPED
 }
 
+enum ExecutionOrigin {
+  DASHBOARD_SESSION
+  API_CREDENTIAL
+}
+
 enum StoredFileKind {
   INPUT
   INTERMEDIATE
@@ -70,12 +75,13 @@ enum WorkflowNodeRunStatus {
 }
 
 model User {
-  id          String                   @id @db.Uuid
-  email       String?                  @unique
-  displayName String?
-  createdAt   DateTime                 @default(now())
-  updatedAt   DateTime                 @updatedAt
-  memberships OrganizationMembership[]
+  id                  String                   @id @db.Uuid
+  email               String?                  @unique
+  displayName         String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  memberships         OrganizationMembership[]
+  requestedExecutions BatchExecution[]         @relation("ExecutionRequestedBy")
 }
 
 model Organization {
@@ -463,6 +469,12 @@ model BatchExecution {
   batchId           String           @db.Uuid
   batchVersionId    String           @db.Uuid
   credentialId      String?          @db.Uuid
+  requestedByUserId String?          @db.Uuid
+  origin            ExecutionOrigin  @default(DASHBOARD_SESSION)
+  requestId         String?          @db.VarChar(128)
+  requestMethod     String?          @db.VarChar(10)
+  requestPath       String?          @db.VarChar(2048)
+  executionString   String           @default("") @db.Text
   status            ExecutionStatus  @default(QUEUED)
   progress          Int              @default(0)
   input             Json
@@ -486,6 +498,7 @@ model BatchExecution {
   batch             Batch            @relation(fields: [batchId], references: [id], onDelete: Cascade)
   batchVersion      BatchVersion     @relation(fields: [batchVersionId], references: [id], onDelete: Restrict)
   credential        ApiCredential?   @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  requestedBy       User?            @relation("ExecutionRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
   steps             StepExecution[]
   events            ExecutionEvent[]
 
@@ -493,24 +506,30 @@ model BatchExecution {
   @@index([organizationId, status, createdAt])
   @@index([status, runAfter, leaseExpiresAt])
   @@index([batchId, createdAt])
+  @@index([requestedByUserId, createdAt])
+  @@index([origin, createdAt])
 }
 
 model StepExecution {
-  id          String              @id @default(uuid()) @db.Uuid
-  executionId String              @db.Uuid
-  nodeId      String
-  toolId      String
-  toolVersion String
-  status      StepExecutionStatus @default(QUEUED)
-  progress    Int                 @default(0)
-  attempts    Int                 @default(0)
-  input       Json?
-  output      Json?
-  error       Json?
-  createdAt   DateTime            @default(now())
-  startedAt   DateTime?
-  completedAt DateTime?
-  execution   BatchExecution      @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  id              String              @id @default(uuid()) @db.Uuid
+  executionId     String              @db.Uuid
+  nodeId          String
+  toolId          String
+  toolVersion     String
+  status          StepExecutionStatus @default(QUEUED)
+  progress        Int                 @default(0)
+  attempts        Int                 @default(0)
+  input           Json?
+  parameters      Json?
+  variablesIn     Json?
+  variablesOut    Json?
+  executionString String?             @db.Text
+  output          Json?
+  error           Json?
+  createdAt       DateTime            @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  execution       BatchExecution      @relation(fields: [executionId], references: [id], onDelete: Cascade)
 
   @@unique([executionId, nodeId])
   @@index([executionId, status])
@@ -618,11 +637,11 @@ model UserProfile {
 }
 
 model WorkerHeartbeat {
-  workerId      String   @id @db.VarChar(160)
-  version       String?  @db.VarChar(80)
-  concurrency   Int
-  lastSeenAt    DateTime @default(now())
-  createdAt     DateTime @default(now())
+  workerId    String   @id @db.VarChar(160)
+  version     String?  @db.VarChar(80)
+  concurrency Int
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   @@index([lastSeenAt])
 }

@@ -6,6 +6,10 @@ export type ExecutionLogStep = {
   progress?: number;
   attempts?: number;
   input?: unknown;
+  parameters?: unknown;
+  variablesIn?: unknown;
+  variablesOut?: unknown;
+  executionString?: string | null;
   output?: unknown;
   error?: unknown;
   createdAt?: string | Date | null;
@@ -19,6 +23,13 @@ export type ExecutionLogData = {
   status: string;
   progress?: number;
   input?: unknown;
+  origin?: string;
+  requestedByUserId?: string | null;
+  credentialId?: string | null;
+  requestId?: string | null;
+  requestMethod?: string | null;
+  requestPath?: string | null;
+  executionString?: string;
   output?: unknown;
   error?: unknown;
   createdAt?: string | Date | null;
@@ -37,10 +48,19 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function redact(value: unknown, key?: string): unknown {
+  if (key && /(secret|password|passwd|token|authorization|api[-_]?key|access[-_]?key|private[-_]?key)/i.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.slice(0, 250).map((item) => redact(item));
+  const object = record(value);
+  if (object) return Object.fromEntries(Object.entries(object).slice(0, 250).map(([name, item]) => [name, redact(item, name)]));
+  if (typeof value === "string" && value.length > 8_000) return `${value.slice(0, 8_000)}… contenuto abbreviato`;
+  return value;
+}
+
 function printable(value: unknown): string {
   if (typeof value === "string") return value;
   try {
-    const serialized = JSON.stringify(value, null, 2);
+    const serialized = JSON.stringify(redact(value), null, 2);
     if (serialized === undefined) return String(value);
     return serialized.length > 12000 ? `${serialized.slice(0, 12000)}\n… contenuto abbreviato` : serialized;
   } catch { return "Valore non serializzabile"; }
@@ -61,7 +81,11 @@ function graphNodeLabels(graph: unknown): Map<string, string> {
 function detailsFrom(value: Record<string, unknown>, includeProgress: boolean): ExecutionLogDetail[] {
   const details: ExecutionLogDetail[] = [];
   if (value.input !== undefined) details.push({ label: "Input blocco", value: printable(value.input) });
-  if (value.output !== undefined) details.push({ label: "Output / variabili interne", value: printable(value.output) });
+  if (value.parameters !== undefined) details.push({ label: "Parametri risolti", value: printable(value.parameters) });
+  if (value.variablesIn !== undefined) details.push({ label: "Variabili in ingresso (workflow/loop)", value: printable(value.variablesIn) });
+  if (value.variablesOut !== undefined) details.push({ label: "Variabili in uscita (workflow/loop)", value: printable(value.variablesOut) });
+  if (value.output !== undefined) details.push({ label: "Output blocco", value: printable(value.output) });
+  if (typeof value.executionString === "string" && value.executionString) details.push({ label: "Stringa di esecuzione", value: value.executionString });
   if (value.error !== undefined) details.push({ label: "Errore", value: printable(value.error) });
   if (includeProgress && typeof value.progress === "number") details.push({ label: "Avanzamento blocco", value: `${value.progress}%` });
   if (typeof value.attempts === "number") details.push({ label: "Tentativi", value: String(value.attempts) });
@@ -77,12 +101,12 @@ export function buildExecutionLog(data: ExecutionLogData, fallbackGraph?: unknow
   entries.push({
     id: `run:${data.id}:start`, timestamp: createdAt, heading: "Avvio job",
     state: data.status,
-    details: [{ label: "Run ID", value: data.id }, { label: "Stato job", value: data.status }],
+    details: [{ label: "Run ID", value: data.id }, { label: "Stato job", value: data.status }, ...(data.origin ? [{ label: "Provenienza", value: data.origin }] : []), ...(data.requestedByUserId ? [{ label: "Utente richiedente ID", value: data.requestedByUserId }] : []), ...(data.credentialId ? [{ label: "Credenziale ID", value: data.credentialId }] : []), ...(data.requestId ? [{ label: "Request ID", value: data.requestId }] : []), ...(data.requestMethod && data.requestPath ? [{ label: "Richiesta HTTP", value: `${data.requestMethod} ${data.requestPath}` }] : [])],
   });
   entries.push({
     id: `run:${data.id}:input`, timestamp: createdAt, heading: "Recepimento parametri di ingresso API",
     state: "INPUT RICEVUTO",
-    details: [{ label: "Batch", value: data.batch?.name ?? "Batch" }, ...(data.batchVersion?.version ? [{ label: "Versione", value: `v${data.batchVersion.version}` }] : []), { label: "Parametri iniziali", value: printable(data.input ?? {}) }],
+    details: [{ label: "Batch", value: data.batch?.name ?? "Batch" }, ...(data.batchVersion?.version ? [{ label: "Versione", value: `v${data.batchVersion.version}` }] : []), { label: "Parametri iniziali", value: printable(data.input ?? {}) }, ...(data.executionString ? [{ label: "Stringa della richiesta", value: data.executionString }] : [])],
   });
 
   const eventSteps = new Set<string>();

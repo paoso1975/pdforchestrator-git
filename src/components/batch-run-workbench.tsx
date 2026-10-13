@@ -18,7 +18,7 @@ export type RunnableBatch = {
 
 type UploadedPdf = { id: string; filename: string; size: number };
 type AvailableInputFile = { id: string; filename: string; sizeBytes: string; sha256: string; createdAt: string };
-type ExecutionState = { id: string; status: string; progress: number; currentStepId?: string | null; error?: unknown; output?: unknown; input?: unknown; createdAt?: string; startedAt?: string | null; completedAt?: string | null; events?: ExecutionLogEvent[]; steps?: ExecutionLogStep[]; batch?: { name?: string }; batchVersion?: { version?: number; graph?: unknown } };
+type ExecutionState = { id: string; status: string; progress: number; currentStepId?: string | null; error?: unknown; output?: unknown; input?: unknown; origin?: string; requestedByUserId?: string | null; credentialId?: string | null; requestId?: string | null; requestMethod?: string | null; requestPath?: string | null; executionString?: string; createdAt?: string; startedAt?: string | null; completedAt?: string | null; events?: ExecutionLogEvent[]; steps?: ExecutionLogStep[]; batch?: { name?: string }; batchVersion?: { version?: number; graph?: unknown } };
 type OutputFile = { id: string; filename: string; mimeType: string; sizeBytes: string; sha256: string; downloadUrl: string; expiresIn: number };
 
 function errorMessage(value: unknown, fallback: string) {

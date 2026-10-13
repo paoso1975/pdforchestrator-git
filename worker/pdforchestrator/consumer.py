@@ -79,8 +79,22 @@ class JobConsumer:
         payload = {"workerId": worker_id, **item}; payload.setdefault("attempts", attempts)
         self.api.post(f"jobs/{execution_id}/steps", payload)
 
+    def _record_unhandled_step_failure(self, execution_id: str, worker_id: str, attempts: int, last_operation: dict[str, Any], error: dict[str, str]) -> None:
+        if last_operation.get("status") != "RUNNING": return
+        failed = {**last_operation, "status": "FAILED", "progress": 0, "error": error, "event": "STEP_FAILED"}
+        try: self._step(execution_id, worker_id, failed, attempts)
+        except Exception: log.exception("Could not append failed operation details for %s", execution_id)
+
     def process(self, claim: dict[str, Any], worker_id: str) -> None:
         job = claim["job"] if "job" in claim else claim; execution_id = job["id"]; started = time.monotonic(); cancelled = threading.Event()
+        last_operation: dict[str, Any] = {}
+        def report(item: dict[str, Any]) -> None:
+            if last_operation.get("nodeId") == item.get("nodeId") and item.get("status") == "RUNNING":
+                last_operation.update(item)
+            else:
+                last_operation.clear()
+                last_operation.update(item)
+            self._step(execution_id, worker_id, item, int(job.get("attemptCount", 1)))
         replay_safe = is_plan_replay_safe(job.get("batchVersion"), self.registry)
         monitor = threading.Thread(target=self._heartbeat_loop, args=(job, worker_id, cancelled, started), daemon=True); monitor.start()
         log.info("Job started", extra={"executionId": execution_id, "workerId": worker_id, "attempt": job.get("attemptCount", 1), "replaySafe": replay_safe})
@@ -109,8 +123,6 @@ class JobConsumer:
                 def heartbeat(progress: int, step_id: str | None, pages: int) -> None:
                     response = self.api.post(f"jobs/{execution_id}/heartbeat", {"workerId": worker_id, "leaseSeconds": self.lease_seconds, "progress": progress, "currentStepId": step_id, "pagesProcessed": pages})
                     if response.get("cancelRequested"): cancelled.set()
-                def report(item: dict[str, Any]) -> None:
-                    self._step(execution_id, worker_id, item, int(job.get("attemptCount", 1)))
                 graph = version["graph"]
                 manifest = version.get("toolManifest")
                 if isinstance(manifest, dict) and manifest.get("formatVersion") in (1, 2):
@@ -139,10 +151,12 @@ class JobConsumer:
         except ToolError as exc:
             retryable = exc.retryable and replay_safe and not cancelled.is_set()
             log.warning("Job failed", extra={"executionId": execution_id, "workerId": worker_id, "attempt": job.get("attemptCount", 1), "errorCode": exc.code, "retryable": retryable, "durationMs": int((time.monotonic() - started) * 1000)})
+            if exc.code != "CANCELLED": self._record_unhandled_step_failure(execution_id, worker_id, int(job.get("attemptCount", 1)), last_operation, {"code": exc.code, "message": str(exc)[:1000]})
             try: self.api.post(f"jobs/{execution_id}/fail", {"workerId": worker_id, "retryable": retryable, "error": {"code": exc.code, "message": str(exc)}})
             except Exception: log.exception("Could not report failure for %s", execution_id)
         except Exception as exc:
             log.exception("Unexpected job error", extra={"executionId": execution_id, "workerId": worker_id, "attempt": job.get("attemptCount", 1), "retryable": replay_safe, "durationMs": int((time.monotonic() - started) * 1000)})
+            self._record_unhandled_step_failure(execution_id, worker_id, int(job.get("attemptCount", 1)), last_operation, {"code": "WORKER_ERROR", "message": str(exc)[:1000]})
             try: self.api.post(f"jobs/{execution_id}/fail", {"workerId": worker_id, "retryable": replay_safe, "error": {"code": "WORKER_ERROR", "message": str(exc)[:1000]}})
             except Exception: log.exception("Could not report failure for %s", execution_id)
         finally:

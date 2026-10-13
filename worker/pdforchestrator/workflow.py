@@ -236,6 +236,44 @@ def _safe(value: Any) -> Any:
     return value
 
 
+_AUDIT_SECRET_KEY = re.compile(r"(secret|password|passwd|token|authorization|api[-_]?key|access[-_]?key|private[-_]?key)", re.IGNORECASE)
+
+
+def _audit_clean(value: Any, *, key: str | None = None, depth: int = 0) -> Any:
+    if key and _AUDIT_SECRET_KEY.search(key): return "[REDACTED]"
+    if depth > 12: return "[DEPTH_LIMIT]"
+    if isinstance(value, str): return value if len(value) <= 8_000 else value[:8_000] + "…[TRUNCATED]"
+    if isinstance(value, dict):
+        items = list(value.items())[:250]
+        return {str(name): _audit_clean(child, key=str(name), depth=depth + 1) for name, child in items}
+    if isinstance(value, list): return [_audit_clean(child, depth=depth + 1) for child in value[:250]]
+    return value
+
+
+def _audit_safe(value: Any) -> Any:
+    cleaned = _audit_clean(value)
+    serialized = json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"), default=str)
+    encoded = serialized.encode("utf-8")
+    if len(encoded) <= 24 * 1024: return cleaned
+    return {"truncated": True, "preview": encoded[:12 * 1024].decode("utf-8", errors="ignore"), "originalBytes": len(encoded)}
+
+
+def _audit_snapshot(variables: dict[str, Any], frames: list[dict[str, Any]], loop_scope: dict[str, Any] | None) -> dict[str, Any]:
+    return _audit_safe({"workflow": variables, "loopScopes": frames, "currentLoop": loop_scope})
+
+
+def _execution_summary(node_id: str, tool_id: Any, version: Any, parameters: Any, inputs: Any, loop_scope: Any) -> str:
+    summary = {
+        "block": {"nodeId": node_id, "toolId": tool_id, "version": version},
+        "parameters": _audit_safe(_safe(parameters)),
+        "inputs": _audit_safe(_safe(inputs)),
+        "loop": _audit_safe(loop_scope),
+    }
+    text = json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2, default=str)
+    if len(text.encode("utf-8")) <= 48 * 1024: return text
+    return text[:24 * 1024] + "\n… [execution log truncated]"
+
+
 def _safe_output_filename(value: Any) -> str:
     filename = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(str(value or "output.pdf")).name).strip("._-")
     if not filename:
@@ -494,13 +532,21 @@ class WorkflowExecutor:
             active = [edge for edge in incoming if edge["source"] in values and edge["source"] not in skipped and edge.get("sourceHandle") in values[edge["source"]]]
             control_incoming = [edge for edge in incoming if edge.get("targetHandle") == "run"]
             active_control = [edge for edge in control_incoming if edge in active]
+            tool_inputs: dict[str, Any] = {}
+            variables_in = _audit_snapshot(variables, variable_frames, _loop_scope)
+
+            def report_start() -> None:
+                report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": 0, "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": variables_in, "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, _loop_scope), "attempts": 1, "event": "STEP_STARTED"})
+
             if tool_id == "input.pdf":
+                report_start()
                 requested = api_input.get(parameters.get("parameter")) if parameters.get("parameter") else None
                 path = input_files.get(requested) if isinstance(requested, str) else None
                 if path is None: path = file_paths[0] if file_paths else next(iter(input_files.values()), None)
                 if not path: raise ToolError("MISSING_INPUT", "Nessun PDF di input è associato al batch.")
                 result = ToolResult({"pdf": path}, len(context.pdf(path).pages))
             elif tool_id == "input.pdf-list":
+                report_start()
                 requested = api_input.get(parameters.get("parameter")) if parameters.get("parameter") else None
                 if not isinstance(requested, list) or not requested: raise ToolError("MISSING_INPUT", "Specificare una lista non vuota di PDF.")
                 documents = []
@@ -511,16 +557,17 @@ class WorkflowExecutor:
                     documents.append({"fileRef": context.source_file_refs.get(resolved_path, str(file_id)), "filename": context.source_filenames.get(resolved_path, Path(path).name), "path": path})
                 result = ToolResult({"pdfs": documents}, sum(len(context.pdf(item["path"]).pages) for item in documents))
             elif control_incoming and not active_control:
-                skipped.add(node_id); report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "SKIPPED", "progress": 100, "output": {"reason": "Nessun ramo di controllo attivo"}}); continue
+                skipped.add(node_id); report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "SKIPPED", "progress": 100, "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": variables_in, "output": {"reason": "Nessun ramo di controllo attivo"}, "executionString": _execution_summary(node_id, tool_id, version, parameters, {}, _loop_scope), "event": "STEP_SKIPPED"}); continue
             elif incoming and not active:
-                skipped.add(node_id); report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "SKIPPED", "progress": 100, "output": {"reason": "Ramo non selezionato"}}); continue
+                skipped.add(node_id); report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "SKIPPED", "progress": 100, "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": variables_in, "output": {"reason": "Ramo non selezionato"}, "executionString": _execution_summary(node_id, tool_id, version, parameters, {}, _loop_scope), "event": "STEP_SKIPPED"}); continue
             else:
-                tool_inputs: dict[str, Any] = {}
                 for edge in active:
                     if edge.get("targetHandle") == "run": continue
                     target_handle = edge.get("targetHandle") or "value"; source_handle = edge.get("sourceHandle") or "value"; value = values[edge["source"]][source_handle]
                     if target_handle in tool_inputs: tool_inputs[target_handle] = [*tool_inputs[target_handle], value] if isinstance(tool_inputs[target_handle], list) else [tool_inputs[target_handle], value]
                     else: tool_inputs[target_handle] = value
+                if tool_id == "data.setVariable" or tool_id in _TRANSFER_TYPES or tool_id in ("pdf.page.delete", "pdf.delete-pages", "pdf.bookmark.add", "pdf.output", "pdf.output.apiName", "output.pdf"):
+                    report_start()
                 if tool_id == "data.setVariable":
                     name, scope, value_type = parameters.get("name"), parameters.get("scope"), parameters.get("valueType")
                     value = parameters.get("value")
@@ -601,7 +648,7 @@ class WorkflowExecutor:
                         loop_value["document"] = page_document
                         loop_value.update({key: value for key, value in loop_scope.items() if not key.startswith("_")})
                         for body_id in body_ids: values.pop(body_id, None)
-                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": min(99, int(index * 100 / limit)), "output": {"currentPage": page_number, "pageId": loop_scope["pageId"], "pageCount": page_count, "index": index, "iteration": index + 1, "maxIterations": limit}})
+                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": min(99, int(index * 100 / limit)), "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": _audit_snapshot(variables, variable_frames, loop_scope), "variablesOut": _audit_snapshot(variables, [*variable_frames, loop_frame], loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, loop_scope), "event": "STEP_ITERATION", "output": {"currentPage": page_number, "pageId": loop_scope["pageId"], "pageCount": page_count, "index": index, "iteration": index + 1, "maxIterations": limit}})
                         body_result = self.execute({"nodes": body_nodes, "edges": body_edges}, api_input, input_files, context, report_step, heartbeat, _values=values, _loop_scope=loop_scope, _internal=True, _depth=_depth + 1, _deferred_deletions=deferred_deletions, _deferred_bookmarks=deferred_bookmarks, _variables=variables, _iteration_budget=iteration_budget, _control_flow=control_flow, _variable_frames=[*variable_frames, loop_frame])
                         pages += body_result.get("pagesProcessed", 0)
                         completed_body.update(body_ids)
@@ -702,7 +749,7 @@ class WorkflowExecutor:
                         loop_scope = {"item": item, "index": source_index, "_loopId": node_id}
                         loop_value.update({"item": item, "index": source_index})
                         for body_id in body_ids: values.pop(body_id, None)
-                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": int(iteration * 100 / max(1, len(indexed_items))), "output": {"index": source_index, "iteration": iteration + 1, "count": len(indexed_items), "maxIterations": limit}})
+                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": int(iteration * 100 / max(1, len(indexed_items))), "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": _audit_snapshot(variables, variable_frames, loop_scope), "variablesOut": _audit_snapshot(variables, [*variable_frames, loop_frame], loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, loop_scope), "event": "STEP_ITERATION", "output": {"index": source_index, "iteration": iteration + 1, "count": len(indexed_items), "maxIterations": limit}})
                         body_result = self.execute({"nodes": body_nodes, "edges": body_edges}, api_input, input_files, context, report_step, heartbeat, _values=values, _loop_scope=loop_scope, _internal=True, _depth=_depth + 1, _deferred_deletions=deferred_deletions, _deferred_bookmarks=deferred_bookmarks, _variables=variables, _iteration_budget=iteration_budget, _control_flow=control_flow, _variable_frames=[*variable_frames, loop_frame])
                         pages += body_result.get("pagesProcessed", 0)
                         completed_body.update(body_ids)
@@ -768,7 +815,7 @@ class WorkflowExecutor:
                         loop_scope = {**(_loop_scope or {}), "iteration": iteration, "_loopId": node_id}
                         loop_value["iteration"] = iteration
                         for body_id in body_ids: values.pop(body_id, None)
-                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": min(99, int((iteration - 1) * 100 / limit)), "output": {"iteration": iteration, "maxIterations": limit, "phase": "body"}})
+                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": min(99, int((iteration - 1) * 100 / limit)), "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": _audit_snapshot(variables, variable_frames, loop_scope), "variablesOut": _audit_snapshot(variables, [*variable_frames, loop_frame], loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, loop_scope), "event": "STEP_ITERATION", "output": {"iteration": iteration, "maxIterations": limit, "phase": "body"}})
                         body_result = self.execute({"nodes": body_nodes, "edges": body_edges}, api_input, input_files, context, report_step, heartbeat, _values=values, _loop_scope=loop_scope, _internal=True, _depth=_depth + 1, _deferred_deletions=deferred_deletions, _deferred_bookmarks=deferred_bookmarks, _variables=variables, _iteration_budget=iteration_budget, _control_flow=control_flow, _variable_frames=[*variable_frames, loop_frame])
                         pages += body_result.get("pagesProcessed", 0)
                         completed_body.update(body_ids)
@@ -901,33 +948,35 @@ class WorkflowExecutor:
                         _register_output(outputs, {"path": candidate, "filename": filename, "contentType": "application/pdf", "nodeId": node_id})
                         result = ToolResult({"pdf": candidate}, len(context.pdf(candidate).pages))
                 else:
+                    report_start()
                     function = self.registry.get(handler_id, version)
                     context.timeout_seconds = min(max_tool_timeout, int(compiled.get("timeoutSeconds", self.registry.timeout(handler_id, version))) if isinstance(compiled, dict) else self.registry.timeout(handler_id, version))
                     if tool_id == "flow.condition": parameters["apiParameters"] = api_input
                     context.progress = lambda done, total: (report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": int(done * 100 / max(1, total)), "attempts": step_attempt}), heartbeat(int(position / max(1, len(order)) * 95), node_id, pages))
                     for step_attempt in range(1, 4):
-                        report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": 0, "input": _safe(tool_inputs), "attempts": step_attempt})
+                        if step_attempt > 1: report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": 0, "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": _audit_snapshot(variables, variable_frames, _loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, _loop_scope), "attempts": step_attempt, "event": "STEP_ATTEMPT"})
                         context._started = time.monotonic()
                         try:
                             result = function(context, tool_inputs, parameters)
                             break
                         except ToolError as error:
                             if not error.retryable or not self.registry.idempotent(handler_id, version) or step_attempt == 3:
-                                report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "FAILED", "progress": 0, "error": {"code": error.code, "message": str(error)}, "attempts": step_attempt})
+                                report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "FAILED", "progress": 0, "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": _audit_snapshot(variables, variable_frames, _loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, _loop_scope), "error": {"code": error.code, "message": str(error)}, "attempts": step_attempt, "event": "STEP_FAILED"})
                                 if any(edge.get("source") == node_id and edge.get("sourceHandle") == "error" for edge in edges):
                                     result = ToolResult({"error": {"code": error.code, "message": str(error)}}, 0); handled_failure = True; break
                                 raise
-                            report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": 0, "event": "STEP_RETRY", "attempts": step_attempt})
+                            report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": 0, "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": _audit_snapshot(variables, variable_frames, _loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, _loop_scope), "event": "STEP_RETRY", "attempts": step_attempt})
                             time.sleep(2 ** (step_attempt - 1)); context.check()
                         except Exception as error:
-                            report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "FAILED", "progress": 0, "error": {"code": "TOOL_ERROR", "message": str(error)[:1000]}, "attempts": step_attempt})
+                            report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "FAILED", "progress": 0, "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": _audit_snapshot(variables, variable_frames, _loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, _loop_scope), "error": {"code": "TOOL_ERROR", "message": str(error)[:1000]}, "attempts": step_attempt, "event": "STEP_FAILED"})
                             if any(edge.get("source") == node_id and edge.get("sourceHandle") == "error" for edge in edges):
                                 result = ToolResult({"error": {"code": "TOOL_ERROR", "message": str(error)[:1000]}}, 0); handled_failure = True; break
                             raise
             values[node_id] = result.outputs; pages += result.pages_processed
             if handled_failure: values[node_id].setdefault("error", {"active": True})
             elif node_transfer is None: values[node_id].setdefault("success", {"active": True})
-            report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "FAILED" if handled_failure else "SUCCEEDED", "progress": 100, "output": _safe(result.outputs)})
+            variables_out = _audit_snapshot(variables, variable_frames, _loop_scope)
+            report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "FAILED" if handled_failure else "SUCCEEDED", "progress": 100, "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": variables_in, "variablesOut": variables_out, "output": _audit_safe(_safe(result.outputs)), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, _loop_scope), "event": "STEP_FAILED" if handled_failure else "STEP_COMPLETED"})
             heartbeat(int((position + 1) / max(1, len(order)) * 95), node_id, pages)
             if node_transfer is not None: pending_transfer = node_transfer
         if not _internal and not outputs:

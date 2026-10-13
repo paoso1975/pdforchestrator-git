@@ -15,7 +15,7 @@ from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 
 from pdforchestrator.tools import ToolContext, ToolError, ToolRegistry, ToolResult, _run_isolated, build_registry
-from pdforchestrator.workflow import WorkflowExecutor, _control_flow_for, _derive_control_flow, _stable_json, _substitute, topological_order
+from pdforchestrator.workflow import WorkflowExecutor, _audit_safe, _control_flow_for, _derive_control_flow, _execution_summary, _stable_json, _substitute, topological_order
 from pdforchestrator.runtime import cleanup_stale_temp_dirs, is_plan_replay_safe
 
 
@@ -208,7 +208,7 @@ class OutputFileTests(unittest.TestCase):
             result, steps = self._run(source, context, [node])
             self.assertEqual(result["files"][0]["filename"], "fattura_originale-artifact-1-1.pdf")
             self.assertEqual(result["files"][0]["contentType"], "application/pdf")
-            step_output = next(step["output"] for step in steps if step["nodeId"] == "artifact-1")
+            step_output = next(step["output"] for step in steps if step["nodeId"] == "artifact-1" and step.get("status") == "SUCCEEDED")
             artifact = step_output["artifact"]
             self.assertEqual(artifact["filename"], result["files"][0]["filename"])
             self.assertEqual(artifact["contentType"], "application/pdf")
@@ -726,6 +726,14 @@ class IsoPageNormalizeTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_execution_audit_redacts_secrets_and_describes_block_parameters(self):
+        snapshot = _audit_safe({"workflow": {"apiToken": "hidden", "chapter": "QR-7"}})
+        self.assertEqual(snapshot["workflow"]["apiToken"], "[REDACTED]")
+        self.assertEqual(snapshot["workflow"]["chapter"], "QR-7")
+        summary = _execution_summary("node-1", "data.setVariable", "1.0.0", {"name": "chapter", "value": "QR-7"}, {"input": 2}, None)
+        self.assertIn('"toolId": "data.setVariable"', summary)
+        self.assertIn('"value": "QR-7"', summary)
+
     def test_topological_order_and_cycle_rejection(self):
         nodes = [{"id": name} for name in "abc"]
         order = topological_order(nodes, [{"source": "a", "target": "b"}, {"source": "b", "target": "c"}])
@@ -801,8 +809,16 @@ class WorkflowTests(unittest.TestCase):
                 {"id": "next", "source": "local", "target": "capture", "sourceHandle": "success", "targetHandle": "run"},
             ]}
             variables: dict[str, object] = {}
-            WorkflowExecutor(build_registry()).execute(graph, {"rows": ["uno", "due"]}, {}, context, lambda _step: None, lambda *_args: None, _internal=True, _variables=variables)
+            steps = []
+            WorkflowExecutor(build_registry()).execute(graph, {"rows": ["uno", "due"]}, {}, context, steps.append, lambda *_args: None, _internal=True, _variables=variables)
             self.assertEqual(variables["captured"], "due")
+            completed_local_steps = [step for step in steps if step.get("nodeId") == "local" and step.get("status") == "SUCCEEDED"]
+            self.assertEqual(len(completed_local_steps), 2)
+            self.assertEqual(completed_local_steps[0]["parameters"]["value"], "uno")
+            self.assertEqual(completed_local_steps[1]["parameters"]["value"], "due")
+            self.assertEqual(completed_local_steps[0]["variablesOut"]["loopScopes"][0]["current"], "uno")
+            self.assertEqual(completed_local_steps[1]["variablesOut"]["loopScopes"][0]["current"], "due")
+            self.assertIn('"toolId": "data.setVariable"', completed_local_steps[0]["executionString"])
             with self.assertRaises(ToolError):
                 _substitute({"source": "variable", "scope": "loop", "name": "current"}, {}, variables, {}, {})
 

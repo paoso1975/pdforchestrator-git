@@ -20,6 +20,7 @@ export async function executionForRequest(executionId: string, request: Request)
     events: { orderBy: { createdAt: "desc" as const }, take: 500 },
     batch: { select: { name: true } },
     batchVersion: { select: { version: true, graph: true } },
+    credential: { select: { id: true, name: true, keyId: true, tokenPrefix: true } },
   };
   let execution = userId ? await prisma.batchExecution.findFirst({ where: { id: executionId, organization: { memberships: { some: { userId } } } }, include }) : null;
   if (!execution) {
