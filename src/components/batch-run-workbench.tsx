@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CheckCircle2, CircleAlert, Copy, Download, File, LoaderCircle, Play, UploadCloud } from "lucide-react";
-import { buildBatchRunRequest, getBatchRunFields, missingRequiredRunInputs, type RunInputField } from "@/lib/batch-run-input";
+import { buildBatchRunRequest, buildDashboardExecutionRequestPreview, getBatchRunFields, missingRequiredRunInputs, type RunInputField } from "@/lib/batch-run-input";
 import { buildExecutionLog, executionLogPlainText, type ExecutionLogEvent, type ExecutionLogStep } from "@/lib/execution-log";
 
 export type RunnableBatch = {
@@ -17,6 +17,7 @@ export type RunnableBatch = {
 };
 
 type UploadedPdf = { id: string; filename: string; size: number };
+type AvailableInputFile = { id: string; filename: string; sizeBytes: string; sha256: string; createdAt: string };
 type ExecutionState = { id: string; status: string; progress: number; currentStepId?: string | null; error?: unknown; output?: unknown; input?: unknown; createdAt?: string; startedAt?: string | null; completedAt?: string | null; events?: ExecutionLogEvent[]; steps?: ExecutionLogStep[]; batch?: { name?: string }; batchVersion?: { version?: number; graph?: unknown } };
 type OutputFile = { id: string; filename: string; mimeType: string; sizeBytes: string; sha256: string; downloadUrl: string; expiresIn: number };
 
@@ -41,8 +42,13 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
   const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({});
   const [jsonErrors, setJsonErrors] = useState<Record<string, string>>({});
   const [uploads, setUploads] = useState<Record<string, UploadedPdf[]>>({});
+  const [availableFiles, setAvailableFiles] = useState<AvailableInputFile[]>([]);
+  const [availableFilesOrganizationId, setAvailableFilesOrganizationId] = useState<string | null>(null);
+  const [availableFilesLoading, setAvailableFilesLoading] = useState(false);
+  const [availableFilesNotice, setAvailableFilesNotice] = useState("");
   const [uploading, setUploading] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState("");
   const [notice, setNotice] = useState("");
   const [run, setRun] = useState<ExecutionState | null>(null);
   const [outputs, setOutputs] = useState<OutputFile[]>([]);
@@ -64,11 +70,41 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
     setNotice("");
   }, [batchId, fields]);
 
+  useEffect(() => {
+    if (!batch?.organizationId) {
+      setAvailableFiles([]);
+      setAvailableFilesOrganizationId(null);
+      return;
+    }
+    setAvailableFiles([]);
+    setAvailableFilesOrganizationId(null);
+    const controller = new AbortController();
+    setAvailableFilesLoading(true);
+    setAvailableFilesNotice("");
+    void fetch(`/api/files/available?organizationId=${encodeURIComponent(batch.organizationId)}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as AvailableInputFile[] | { error?: string };
+        if (!response.ok || !Array.isArray(data)) throw new Error(errorMessage(data, "Impossibile leggere i file esistenti in Cubbit."));
+        setAvailableFiles(data);
+        setAvailableFilesOrganizationId(batch.organizationId);
+      })
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) setAvailableFilesNotice(cause instanceof Error ? cause.message : "Errore durante la lettura dei file Cubbit.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setAvailableFilesLoading(false); });
+    return () => controller.abort();
+  }, [batch?.organizationId]);
+
   const requestBody = useMemo(() => buildBatchRunRequest(fields, values), [fields, values]);
+  const requestPreview = useMemo(() => batch ? buildDashboardExecutionRequestPreview(batch.id, requestBody, idempotencyKey || "<UUID generato prima dell’invio>") : "", [batch, requestBody, idempotencyKey]);
   const missing = useMemo(() => missingRequiredRunInputs(fields, values), [fields, values]);
   const activeRunId = run?.id ?? null;
   const runStatus = run?.status ?? null;
   const completedRunId = run && ["COMPLETED", "SUCCEEDED"].includes(run.status) ? run.id : null;
+
+  useEffect(() => {
+    setIdempotencyKey(crypto.randomUUID());
+  }, []);
 
   useEffect(() => {
     if (!activeRunId || !runStatus || isTerminal(runStatus)) return;
@@ -161,6 +197,22 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
     setValue(field.name, field.kind === "pdf-list" ? next.map((item) => item.id) : undefined);
   }
 
+  function selectExistingFile(field: RunInputField, fileId: string) {
+    if (!batch || availableFilesOrganizationId !== batch.organizationId) return;
+    const file = availableFiles.find((item) => item.id === fileId);
+    if (!file) return;
+    const current = uploads[field.name] ?? [];
+    if (current.some((item) => item.id === file.id)) return;
+    const maxItems = field.kind === "pdf-list" ? field.maxItems : 1;
+    if (maxItems !== undefined && current.length >= maxItems) {
+      setNotice(`Il campo ${field.name} accetta al massimo ${maxItems} PDF.`);
+      return;
+    }
+    const next = [...current, { id: file.id, filename: file.filename, size: Number(file.sizeBytes) }];
+    setUploads((state) => ({ ...state, [field.name]: next }));
+    setValue(field.name, field.kind === "pdf-list" ? next.map((item) => item.id) : file.id);
+  }
+
   function updateJsonField(field: RunInputField, draft: string) {
     setJsonDrafts((state) => ({ ...state, [field.name]: draft }));
     try {
@@ -180,17 +232,20 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
     const invalidJson = Object.entries(jsonErrors).filter(([, value]) => value).map(([key]) => key);
     if (invalidJson.length) { setNotice(`Correggi il JSON dei campi: ${invalidJson.join(", ")}.`); return; }
     setSubmitting(true);
+    const requestIdempotencyKey = idempotencyKey || crypto.randomUUID();
+    setIdempotencyKey(requestIdempotencyKey);
     setNotice("");
     setOutputs([]);
     try {
       const response = await fetch(`/api/batches/${encodeURIComponent(batch.id)}/executions`, {
         method: "POST",
-        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+        headers: { "content-type": "application/json", "idempotency-key": requestIdempotencyKey },
         body: JSON.stringify(requestBody),
       });
       const data = await response.json() as ExecutionState & { error?: string; issues?: Array<{ message?: string }> };
       if (!response.ok) throw new Error(data.issues?.map((issue) => issue.message).filter(Boolean).join(" ") || data.error || "Impossibile avviare il batch.");
       setRun({ ...data, batch: { name: batch.name }, batchVersion: { version: batch.version, graph: batch.graph } });
+      setIdempotencyKey(crypto.randomUUID());
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "Errore durante l’avvio dell’esecuzione.");
     } finally {
@@ -238,7 +293,7 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
     <div className="grid items-start gap-4 xl:grid-cols-[minmax(260px,0.95fr)_minmax(330px,1.2fr)_minmax(260px,0.95fr)]">
       <section className="min-w-0 rounded-xl border border-[#293744] bg-[#101923] p-4 sm:p-5">
         <div className="flex items-center justify-between"><div><p className="text-[10px] uppercase tracking-[.16em] text-[#2E7BFA]">1 · Request</p><h2 className="mt-1 text-sm font-semibold">JSON di esecuzione</h2></div><span className="rounded border border-[#2b3b47] px-2 py-1 text-[10px] text-slate-500">v{batch?.version}</span></div>
-        <p className="mt-2 text-[11px] leading-5 text-slate-500">Body inviato all’endpoint dashboard. I PDF sono riferiti tramite file ID del filesystem.</p>
+        <p className="mt-2 text-[11px] leading-5 text-slate-500">Body inviato all’endpoint dashboard. I PDF sono riferiti tramite file ID di Cubbit.</p>
         <pre className="mt-4 max-h-[480px] min-h-44 overflow-auto rounded-lg border border-[#202d38] bg-[#0b141d] p-3 text-[10px] leading-5 text-[#c3cddc]">{JSON.stringify(requestBody, null, 2)}</pre>
         <p className="mt-3 break-all font-mono text-[10px] text-slate-600">POST /api/batches/{batch?.id}/executions</p>
         {missing.length > 0 && <p className="mt-3 text-[10px] text-amber-300">Richiesti: {missing.join(", ")}</p>}
@@ -247,12 +302,16 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
       <form onSubmit={startExecution} className="min-w-0 rounded-xl border border-[#293744] bg-[#101923] p-4 sm:p-5">
         <div><p className="text-[10px] uppercase tracking-[.16em] text-[#2E7BFA]">2 · Input</p><h2 className="mt-1 text-sm font-semibold">Parametri del batch</h2></div>
         {!fields.length ? <p className="mt-5 rounded-lg border border-[#293744] p-4 text-xs text-slate-500">Questo batch non dichiara parametri di input.</p> : <div className="mt-4 space-y-4">
-          {fields.map((field) => <InputControl key={field.name} field={field} value={values[field.name]} jsonDraft={jsonDrafts[field.name]} jsonError={jsonErrors[field.name]} uploads={uploads[field.name] ?? []} uploading={uploading === field.name} onValue={(value) => setValue(field.name, value)} onJson={(draft) => updateJsonField(field, draft)} onFiles={(files) => void uploadFiles(field, files)} onRemove={(fileId) => removeUpload(field, fileId)}/>) }
+          {fields.map((field) => <InputControl key={field.name} field={field} value={values[field.name]} jsonDraft={jsonDrafts[field.name]} jsonError={jsonErrors[field.name]} uploads={uploads[field.name] ?? []} availableFiles={availableFilesOrganizationId === batch?.organizationId ? availableFiles : []} availableFilesLoading={availableFilesLoading} uploading={uploading === field.name} onValue={(value) => setValue(field.name, value)} onJson={(draft) => updateJsonField(field, draft)} onFiles={(files) => void uploadFiles(field, files)} onExisting={(fileId) => selectExistingFile(field, fileId)} onRemove={(fileId) => removeUpload(field, fileId)}/>) }
         </div>}
+        {availableFilesNotice && <p role="status" className="mt-3 text-[10px] text-amber-300">{availableFilesNotice}</p>}
         <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-[#25313c] pt-4">
           <button type="submit" disabled={submitting || Boolean(uploading) || Boolean(run && !isTerminal(run.status)) || missing.length > 0 || Object.values(jsonErrors).some(Boolean)} className="inline-flex items-center gap-2 rounded-lg bg-[#136EF9] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#2E7BFA] disabled:cursor-not-allowed disabled:opacity-40"><Play size={14}/>{submitting ? "Accodamento…" : "Avvia batch"}</button>
           <span className="text-[10px] text-slate-600">L’esecuzione viene elaborata dal worker esterno.</span>
         </div>
+        <label className="mt-5 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Anteprima chiamata API</label>
+        <p className="mt-1 text-[9px] leading-4 text-slate-600">Questa pagina usa la sessione dashboard; il browser invia il cookie same-origin. Non genera né espone Access Key o Secret.</p>
+        <textarea readOnly aria-label="Anteprima completa della chiamata API del batch" value={requestPreview} rows={12} spellCheck={false} className="mt-2 block w-full resize-y rounded-lg border border-[#263541] bg-[#0b141d] p-3 font-mono text-[9px] leading-4 text-[#b9c9df] outline-none focus:border-[#136EF9]"/>
       </form>
 
       <section className="min-w-0 rounded-xl border border-[#293744] bg-[#101923] p-4 sm:p-5">
@@ -279,16 +338,19 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
   </>;
 }
 
-function InputControl({ field, value, jsonDraft, jsonError, uploads, uploading, onValue, onJson, onFiles, onRemove }: {
+function InputControl({ field, value, jsonDraft, jsonError, uploads, availableFiles, availableFilesLoading, uploading, onValue, onJson, onFiles, onExisting, onRemove }: {
   field: RunInputField;
   value: unknown;
   jsonDraft?: string;
   jsonError?: string;
   uploads: UploadedPdf[];
+  availableFiles: AvailableInputFile[];
+  availableFilesLoading: boolean;
   uploading: boolean;
   onValue: (value: unknown) => void;
   onJson: (draft: string) => void;
   onFiles: (files: FileList | null) => void;
+  onExisting: (fileId: string) => void;
   onRemove: (fileId: string) => void;
 }) {
   const base = "mt-1.5 block w-full rounded-lg border border-[#2b3b47] bg-[#0b141d] px-3 py-2.5 text-xs text-slate-100 outline-none focus:border-[#4b6b9a]";
@@ -297,7 +359,8 @@ function InputControl({ field, value, jsonDraft, jsonError, uploads, uploading, 
     {field.kind === "pdf" || field.kind === "pdf-list" ? <div className="mt-2 rounded-lg border border-dashed border-[#354650] bg-[#0d1720] p-3">
       <span className="flex items-center gap-2 text-[10px] text-slate-400"><UploadCloud size={14} className="text-[#779ed9]"/>{field.kind === "pdf-list" ? "Carica uno o più PDF; l’ordine della selezione determina l’ordine della lista." : "Carica un PDF."}</span>
       <input type="file" accept="application/pdf,.pdf" multiple={field.kind === "pdf-list"} disabled={uploading} onChange={(event) => { onFiles(event.currentTarget.files); event.currentTarget.value = ""; }} className="mt-3 block w-full text-[10px] text-slate-400 file:mr-3 file:rounded-md file:border-0 file:bg-[#202e42] file:px-3 file:py-2 file:text-[10px] file:font-medium file:text-[#b5ccef] disabled:opacity-40"/>
-      {uploading && <p className="mt-2 flex items-center gap-2 text-[10px] text-[#89abdd]"><LoaderCircle size={12} className="animate-spin"/>Upload verso il filesystem…</p>}
+      <label className="mt-3 block text-[10px] text-slate-500">Oppure seleziona un PDF già presente in Cubbit<select value="" disabled={availableFilesLoading || !availableFiles.length} onChange={(event) => { if (event.target.value) onExisting(event.target.value); }} className="mt-1.5 block w-full rounded-md border border-[#2b3b47] bg-[#0b141d] px-2.5 py-2 text-[10px] text-slate-200 disabled:opacity-50"><option value="">{availableFilesLoading ? "Caricamento file…" : availableFiles.length ? "Scegli un file esistente…" : "Nessun PDF disponibile"}</option>{availableFiles.map((file) => <option key={file.id} value={file.id}>{file.filename} · {formatBytes(Number(file.sizeBytes))}</option>)}</select></label>
+      {uploading && <p className="mt-2 flex items-center gap-2 text-[10px] text-[#89abdd]"><LoaderCircle size={12} className="animate-spin"/>Upload verso Cubbit…</p>}
       {uploads.length > 0 && <ol className="mt-3 space-y-1.5">{uploads.map((file, index) => <li key={file.id} className="flex items-center gap-2 rounded border border-[#263540] px-2 py-2 text-[10px]"><span className="w-5 text-slate-600">{field.kind === "pdf-list" ? `${index + 1}.` : ""}</span><File size={13} className="shrink-0 text-[#789ed8]"/><span className="min-w-0 flex-1 truncate">{file.filename}</span><span className="shrink-0 text-slate-600">{formatBytes(file.size)}</span><button type="button" onClick={() => onRemove(file.id)} aria-label={`Rimuovi ${file.filename}`} className="px-1 text-rose-300">×</button></li>)}</ol>}
       {typeof value === "string" && field.kind === "pdf" && <span className="sr-only">File ID {value}</span>}
     </div> : field.kind === "json" ? <><textarea value={jsonDraft ?? (value === undefined ? "" : JSON.stringify(value, null, 2))} onChange={(event) => onJson(event.target.value)} rows={5} spellCheck={false} placeholder={field.defaultValue === undefined ? "{}" : undefined} className={`${base} resize-y font-mono text-[10px]`} aria-invalid={Boolean(jsonError)}/>{jsonError && <span className="mt-1 block text-[10px] text-rose-300">{jsonError}</span>}</>

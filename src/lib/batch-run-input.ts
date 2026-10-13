@@ -74,6 +74,17 @@ export function buildBatchRunRequest(fields: RunInputField[], values: Record<str
   return { input };
 }
 
+export function buildDashboardExecutionRequestPreview(batchId: string, requestBody: { input: Record<string, unknown> }, idempotencyKey = "<UUID generato prima dell’invio>"): string {
+  return [
+    `POST /api/batches/${encodeURIComponent(batchId)}/executions`,
+    "Content-Type: application/json",
+    `Idempotency-Key: ${idempotencyKey}`,
+    "Autenticazione: sessione dashboard (cookie same-origin gestito dal browser)",
+    "",
+    JSON.stringify(requestBody, null, 2),
+  ].join("\n");
+}
+
 export function missingRequiredRunInputs(fields: RunInputField[], values: Record<string, unknown>): string[] {
   return fields.filter((field) => {
     if (!field.required) return false;

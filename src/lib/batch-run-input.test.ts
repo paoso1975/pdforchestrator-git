@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBatchRunRequest, getBatchRunFields, missingRequiredRunInputs } from "./batch-run-input";
+import { buildBatchRunRequest, buildDashboardExecutionRequestPreview, getBatchRunFields, missingRequiredRunInputs } from "./batch-run-input";
 
 test("identifies single and ordered PDF list inputs from the published JSON schema", () => {
   const fields = getBatchRunFields({
@@ -33,4 +33,13 @@ test("keeps published defaults, validates required empties, and builds API input
   assert.deepEqual(missingRequiredRunInputs(fields, values), []);
   assert.deepEqual(buildBatchRunRequest(fields, values), { input: values });
   assert.deepEqual(buildBatchRunRequest(fields, { nome: "risultato.pdf" }), { input: { nome: "risultato.pdf" } });
+});
+
+test("previews the authenticated dashboard execution request with all current inputs", () => {
+  const preview = buildDashboardExecutionRequestPreview("batch/id", { input: { documenti: ["f1", "f2"], titolo: "finale.pdf" } }, "run-key-123");
+  assert.match(preview, /^POST \/api\/batches\/batch%2Fid\/executions/m);
+  assert.match(preview, /Idempotency-Key: run-key-123/);
+  assert.match(preview, /sessione dashboard/);
+  assert.match(preview, /"documenti": \[\s+"f1",\s+"f2"/);
+  assert.match(preview, /"titolo": "finale\.pdf"/);
 });
