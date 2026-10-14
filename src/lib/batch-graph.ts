@@ -27,6 +27,8 @@ export type ApiParameter = {
   itemType?: "string" | "number" | "boolean" | "object" | "array";
   itemsSchema?: Record<string, unknown>;
   arrayColumns?: ApiArrayColumn[];
+  /** Original block binding name when the public API field was renamed. */
+  sourceName?: string;
   minItems?: number;
   maxItems?: number;
   uniqueItems?: boolean;
@@ -354,6 +356,7 @@ export function makeSchemas(parameters: ApiParameter[]) {
     ...(parameter.type === "pdf-list" ? { items: { type: "string", format: "uri", contentMediaType: "application/pdf", "x-file-reference": true }, minItems: 1, uniqueItems: true } : parameter.type === "array" ? { items: parameter.arrayColumns !== undefined ? apiArrayColumnsToSchema(parameter.arrayColumns) : parameter.itemsSchema ?? { type: parameter.itemType ?? "string", ...(parameter.itemType === "object" ? { additionalProperties: true } : {}) }, ...(parameter.minItems === undefined ? {} : { minItems: parameter.minItems }), ...(parameter.maxItems === undefined ? {} : { maxItems: parameter.maxItems }), ...(parameter.uniqueItems === undefined ? {} : { uniqueItems: parameter.uniqueItems }) } : {}),
     ...(parameter.type === "json" ? { additionalProperties: true } : {}),
     description: parameter.description,
+    ...(parameter.sourceName ? { "x-source-parameter": parameter.sourceName } : {}),
     ...(parameter.defaultValue === undefined ? {} : { default: parameter.defaultValue }),
     ...(parameter.enumValues?.length ? { enum: parameter.enumValues } : {}),
     ...(parameter.minimum === undefined ? {} : { minimum: parameter.minimum }),

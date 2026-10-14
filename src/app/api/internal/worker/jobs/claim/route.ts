@@ -6,6 +6,7 @@ import { requireWorker } from "@/lib/execution-auth";
 import { createStorageClient } from "@/lib/storage";
 import { verifyStoredPdfUpload } from "@/lib/upload-verification";
 import { collectPdfFileReferences, validatePdfInputFileRecords } from "@/lib/pdf-file-references";
+import { addApiSourceAliases } from "@/lib/api-schema";
 
 export const runtime = "nodejs";
 const schema = z.object({ workerId: z.string().min(1).max(120), leaseSeconds: z.number().int().min(30).max(900).default(120) }).strict();
@@ -55,7 +56,8 @@ export async function POST(request: NextRequest) {
       }
     }
     const files = validation.files;
-    return NextResponse.json({ job, files: files.map((file) => ({ ...file, sizeBytes: file.sizeBytes.toString() })) });
+    const workerInput = addApiSourceAliases(input, job.batchVersion.inputSchema);
+    return NextResponse.json({ job: { ...job, input: workerInput }, files: files.map((file) => ({ ...file, sizeBytes: file.sizeBytes.toString() })) });
   } catch (error) {
     console.error("Worker claim failed", error);
     if (claimedExecutionId) {

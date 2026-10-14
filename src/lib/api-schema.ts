@@ -23,6 +23,7 @@ type JsonSchemaProperty = {
   minItems?: number;
   maxItems?: number;
   uniqueItems?: boolean;
+  "x-source-parameter"?: string;
 };
 
 const secretName = /(?:secret|password|passwd|token|credential|(?:api|access|private)[_-]?key)/i;
@@ -135,6 +136,22 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
       issues.push({ code: "SECRET_INPUT", parameter: item.name, message: "Il campo '" + item.name + "' sembra contenere un segreto. Secret e credenziali non possono essere inviati nel body dell'API." });
       continue;
     }
+    if (item.sourceName && item.sourceName !== item.name) {
+      const source = merged.find((parameter) => parameter.name === item.sourceName);
+      if (source) {
+        const duplicate = merged.find((parameter) => parameter.name === item.name && parameter !== source);
+        if (duplicate) {
+          issues.push({ code: "TYPE_COLLISION", parameter: item.name, message: `Il nome API '${item.name}' è già utilizzato da un altro parametro.` });
+          continue;
+        }
+        if (source.type !== item.type) {
+          issues.push({ code: "TYPE_COLLISION", parameter: item.name, message: `Il parametro rinominato '${item.name}' non corrisponde più al tipo del binding originale.` });
+          continue;
+        }
+        source.name = item.name;
+        source.sourceName = item.sourceName;
+      }
+    }
     const current = merged.find((parameter) => parameter.name === item.name);
     if (!current) { merged.push({ ...item }); continue; }
     if (current.type !== item.type) {
@@ -202,7 +219,7 @@ export function parametersFromSchema(schema: unknown): ApiParameter[] {
         return { name: columnName, type: columnType, required: property.items?.required?.includes(columnName) ?? false, ...(column.default === undefined ? {} : { defaultValue: column.default }) };
       })
       : undefined;
-    return [{ name, type: type as ApiParameter["type"], description: property.description ?? "", required: record.required?.includes(name) ?? false, defaultValue: property.default, enumValues: property.enum, itemType: type === "array" ? parameterType(property.items) as ApiParameter["itemType"] : undefined, itemsSchema, arrayColumns, minItems: property.minItems, maxItems: property.maxItems, uniqueItems: property.uniqueItems, minimum: property.minimum, maximum: property.maximum, pattern: property.pattern }];
+    return [{ name, type: type as ApiParameter["type"], description: property.description ?? "", required: record.required?.includes(name) ?? false, defaultValue: property.default, enumValues: property.enum, itemType: type === "array" ? parameterType(property.items) as ApiParameter["itemType"] : undefined, itemsSchema, arrayColumns, sourceName: property["x-source-parameter"], minItems: property.minItems, maxItems: property.maxItems, uniqueItems: property.uniqueItems, minimum: property.minimum, maximum: property.maximum, pattern: property.pattern }];
   });
 }
 
@@ -237,9 +254,24 @@ export function exampleInput(schema: ReturnType<typeof makeSchemas>): Record<str
     if (property.enum?.length) { result[name] = property.enum[0]; continue; }
     if (property.contentMediaType === "application/pdf" || (property as JsonSchemaProperty & { "x-file-reference"?: boolean })["x-file-reference"]) { result[name] = "00000000-0000-4000-8000-000000000001"; continue; }
     if (property.type === "array" && property.items?.contentMediaType === "application/pdf") { result[name] = ["00000000-0000-4000-8000-000000000001"]; continue; }
-    result[name] = property.type === "number" || property.type === "integer" ? 1 : property.type === "boolean" ? true : property.type === "array" ? [] : property.type === "object" ? {} : "stringa";
+    result[name] = exampleValueForSchema(property);
   }
   return result;
+}
+
+function exampleValueForSchema(property: JsonSchemaProperty): unknown {
+  if (property.default !== undefined) return property.default;
+  if (property.enum?.length) return property.enum[0];
+  if (property.contentMediaType === "application/pdf" || (property as JsonSchemaProperty & { "x-file-reference"?: boolean })["x-file-reference"]) return "00000000-0000-4000-8000-000000000001";
+  if (property.type === "object" || property.properties) {
+    return Object.fromEntries(Object.entries(property.properties ?? {}).map(([name, child]) => [name, exampleValueForSchema(child)]));
+  }
+  if (property.type === "array") {
+    if (property.items?.contentMediaType === "application/pdf") return ["00000000-0000-4000-8000-000000000001"];
+    if (property.items?.properties) return [exampleValueForSchema(property.items)];
+    return [];
+  }
+  return property.type === "number" || property.type === "integer" ? 1 : property.type === "boolean" ? true : "stringa";
 }
 
 export function applySchemaDefaults(value: unknown, schema: unknown): unknown {
@@ -255,6 +287,19 @@ export function applySchemaDefaults(value: unknown, schema: unknown): unknown {
   }
   if (spec.type === "array" && Array.isArray(value) && spec.items) return value.map((item) => applySchemaDefaults(item, spec.items));
   return value;
+}
+
+/** Adds internal aliases for renamed public fields without changing the stored/request payload. */
+export function addApiSourceAliases(input: Record<string, unknown>, schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return input;
+  const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
+  const output = { ...input };
+  for (const [publicName, raw] of Object.entries(properties)) {
+    if (!Object.hasOwn(input, publicName) || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const sourceName = (raw as { "x-source-parameter"?: unknown })["x-source-parameter"];
+    if (typeof sourceName === "string" && safeName.test(sourceName) && !blockedNames.has(sourceName) && !Object.hasOwn(output, sourceName)) output[sourceName] = input[publicName];
+  }
+  return output;
 }
 
 export function apiRequestExample(schema: ReturnType<typeof makeSchemas>, batchId: string, apiBaseUrl = "https://api.pdforchestrator.com") {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createNode } from "@/lib/batch-graph";
-import { apiRequestExample, applySchemaDefaults, generateApiDefinition, makeOutputSchema, parametersFromSchema } from "@/lib/api-schema";
+import { addApiSourceAliases, apiRequestExample, applySchemaDefaults, generateApiDefinition, makeOutputSchema, parametersFromSchema } from "@/lib/api-schema";
 
 function node(type: string, x: number) {
   const result = createNode(type, { x, y: 0 });
@@ -125,6 +125,18 @@ test("builds named array columns with types, required flags and defaults, then r
     { name: "attivo", type: "boolean", required: false, defaultValue: true },
   ]);
   assert.deepEqual(applySchemaDefaults([{ testoQR: "qr-1" }], result.inputSchema.properties.records), [{ testoQR: "qr-1", nomeQR: "Ricevuta", priorita: 2, attivo: true }]);
+  assert.deepEqual(apiRequestExample(result.inputSchema, "batch-uuid").requestBody.input.records, [{ testoQR: "stringa", nomeQR: "Ricevuta", priorita: 2, attivo: true }]);
+});
+
+test("renames an inferred API field without disconnecting its original block input", () => {
+  const input = node("input.pdf", 0);
+  input.data.parameters.parameter = "documento";
+  const result = generateApiDefinition([input], [{ name: "pdfPrincipale", sourceName: "documento", type: "pdf", description: "PDF di ingresso", required: true }]);
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(Object.keys(result.inputSchema.properties), ["pdfPrincipale"]);
+  assert.equal(result.inputSchema.properties.pdfPrincipale["x-source-parameter"], "documento");
+  assert.equal(parametersFromSchema(result.inputSchema)[0]?.sourceName, "documento");
+  assert.deepEqual(addApiSourceAliases({ pdfPrincipale: "file-id" }, result.inputSchema), { pdfPrincipale: "file-id", documento: "file-id" });
 });
 
 test("requires named columns for a manually declared API array", () => {
