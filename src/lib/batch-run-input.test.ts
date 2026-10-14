@@ -43,3 +43,10 @@ test("previews the authenticated dashboard execution request with all current in
   assert.match(preview, /"documenti": \[\s+"f1",\s+"f2"/);
   assert.match(preview, /"titolo": "finale\.pdf"/);
 });
+
+test("dashboard request uses the StoredFile ID returned by the available-files API", () => {
+  const storedFile = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", filename: "input.pdf", sizeBytes: "2048", sha256: "a".repeat(64), createdAt: "2026-10-14T12:00:00.000Z" };
+  const fields = getBatchRunFields({ type: "object", properties: { documento: { type: "string", contentMediaType: "application/pdf" } }, required: ["documento"] });
+  const body = buildBatchRunRequest(fields, { documento: storedFile.id });
+  assert.deepEqual(body, { input: { documento: storedFile.id } });
+});

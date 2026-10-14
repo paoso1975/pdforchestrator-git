@@ -439,7 +439,9 @@ class WorkflowExecutor:
             }
             try:
                 graph_hash = hashlib.sha256(_stable_json(canonical_graph).encode("utf-8")).hexdigest()
-                plan_body = {key: value for key, value in compiled_plan.items() if key != "planHash"}
+              # plan_body = {key: value for key, value in compiled_plan.items() if key != "planHash"}
+                plan_body = {key: value for key, value in compiled_plan.items() if key not in ("planHash", "graph")}
+
                 plan_hash = hashlib.sha256(_stable_json(plan_body).encode("utf-8")).hexdigest()
             except (TypeError, ValueError) as exc:
                 raise ToolError("INVALID_PLAN", "Il piano contiene valori non serializzabili.") from exc
@@ -493,10 +495,6 @@ class WorkflowExecutor:
                 raise ToolError("INVALID_GRAPH", "Nome variabile non valido o duplicato.")
             if default is not None:
                 variables[name] = default
-        file_paths = [input_files[value] for value in api_input.values() if isinstance(value, str) and value in input_files]
-        for value in api_input.values():
-            if isinstance(value, list): file_paths.extend(input_files[item] for item in value if isinstance(item, str) and item in input_files)
-        file_paths.extend(path for path in input_files.values() if path not in file_paths)
         max_tool_timeout = context.timeout_seconds
         pending_transfer: dict[str, Any] | None = None
         for position, node_id in enumerate(order):
@@ -540,10 +538,21 @@ class WorkflowExecutor:
 
             if tool_id == "input.pdf":
                 report_start()
-                requested = api_input.get(parameters.get("parameter")) if parameters.get("parameter") else None
-                path = input_files.get(requested) if isinstance(requested, str) else None
-                if path is None: path = file_paths[0] if file_paths else next(iter(input_files.values()), None)
-                if not path: raise ToolError("MISSING_INPUT", "Nessun PDF di input è associato al batch.")
+                parameter_name = parameters.get("parameter")
+                if isinstance(parameter_name, str) and parameter_name:
+                    requested = api_input.get(parameter_name)
+                    if not isinstance(requested, str) or not requested:
+                        raise ToolError("MISSING_INPUT", f"Il parametro PDF obbligatorio '{parameter_name}' non è valorizzato.")
+                    path = input_files.get(requested)
+                    if path is None:
+                        raise ToolError("INPUT_FILE_NOT_FOUND", f"Il file indicato dal parametro '{parameter_name}' ({requested}) non è stato scaricato o non è disponibile.")
+                elif len(input_files) == 1:
+                    # Compatibility for older published graphs without a parameter name.
+                    path = next(iter(input_files.values()))
+                elif not input_files:
+                    raise ToolError("MISSING_INPUT", "Nessun PDF di input è associato al batch.")
+                else:
+                    raise ToolError("AMBIGUOUS_INPUT", "Il blocco Input PDF non dichiara il parametro da usare e sono disponibili più file.")
                 result = ToolResult({"pdf": path}, len(context.pdf(path).pages))
             elif tool_id == "input.pdf-list":
                 report_start()

@@ -1,12 +1,13 @@
 import { Prisma } from "@/generated/prisma/client";
 import { createHash } from "node:crypto";
-import { HeadObjectCommand } from "@aws-sdk/client-s3";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { buildExecutionRequestString, executionRequestId, safeExecutionLogValue } from "@/lib/execution-audit";
 import { prisma } from "@/lib/prisma";
 import { createStorageClient } from "@/lib/storage";
+import { verifyStoredPdfUpload } from "@/lib/upload-verification";
+import { collectPdfFileReferences, PdfFileReferenceError, validatePdfInputFileRecords } from "@/lib/pdf-file-references";
 import { validationError } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -28,7 +29,7 @@ function validateJsonSchema(value: unknown, schema: unknown): string[] {
       if (field.type === "boolean" && typeof val !== "boolean") errors.push(`Valore non valido per ${key}.`);
       if (field.type === "string") {
         if (typeof val !== "string" || (field.minLength !== undefined && val.length < field.minLength) || (field.maxLength !== undefined && val.length > field.maxLength) || (field.enum && !field.enum.includes(val))) errors.push(`Valore non valido per ${key}.`);
-        if (field.format === "uri" && (typeof val !== "string" || !z.string().uuid().safeParse(val).success)) errors.push(`Il parametro file ${key} deve contenere un fileId UUID del filesystem.`);
+        if (field.contentMediaType === "application/pdf" && (typeof val !== "string" || !z.string().uuid().safeParse(val).success)) errors.push(`Il parametro file ${key} deve contenere un fileId UUID del filesystem.`);
       }
       if (field.type === "array" && (!Array.isArray(val) || (field.items?.type === "string" && val.some((item) => typeof item !== "string")) || (field.items?.type === "number" && val.some((item) => typeof item !== "number" || !Number.isFinite(item))))) errors.push(`Valore non valido per ${key}.`);
     }
@@ -56,18 +57,23 @@ export async function POST(request: NextRequest, context: Context) {
     }
     const issues = validateJsonSchema(body.input, batch.activeVersion.inputSchema);
     if (issues.length) return NextResponse.json({ error: "Input non valido.", issues }, { status: 400 });
-    const properties = (batch.activeVersion.inputSchema as { properties?: Record<string, { format?: string }> }).properties ?? {};
-    const fileIds = [...new Set(Object.entries(body.input).filter(([name]) => properties[name]?.format === "uri").map(([, value]) => value).filter((value): value is string => typeof value === "string"))];
+    let fileReferences;
+    try { fileReferences = collectPdfFileReferences(body.input, batch.activeVersion.inputSchema); }
+    catch (error) {
+      if (error instanceof PdfFileReferenceError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+      throw error;
+    }
+    const fileIds = [...new Set(fileReferences.map(({ fileId }) => fileId))];
     if (fileIds.length) {
-      const files = await prisma.storedFile.findMany({ where: { id: { in: fileIds }, organizationId: batch.organizationId, kind: "INPUT" } });
-      if (files.length !== fileIds.length) return NextResponse.json({ error: "Uno o più file non appartengono all'organizzazione." }, { status: 400 });
+      const files = await prisma.storedFile.findMany({ where: { id: { in: fileIds } } });
+      const validation = validatePdfInputFileRecords(fileReferences, files, { organizationId: batch.organizationId });
+      if (!validation.valid) return NextResponse.json({ error: validation.error.message, code: validation.error.code }, { status: validation.error.status });
       const storage = createStorageClient();
-      for (const file of files) {
+      for (const file of validation.files) {
         try {
-          const head = await storage.send(new HeadObjectCommand({ Bucket: file.bucket, Key: file.objectKey }));
-          if (head.ContentLength !== Number(file.sizeBytes) || head.ContentType !== "application/pdf") return NextResponse.json({ error: `File non valido o incompleto: ${file.filename}.` }, { status: 409 });
-        }
-        catch { return NextResponse.json({ error: `Upload non ancora completato: ${file.filename}.` }, { status: 409 }); }
+          const verification = await verifyStoredPdfUpload(storage, file);
+          if (!verification.valid) return NextResponse.json({ error: `File non valido o incompleto: ${file.filename}.`, code: verification.reason }, { status: 409 });
+        } catch { return NextResponse.json({ error: `Upload non disponibile su Cubbit: ${file.filename}.`, code: "FILE_UNAVAILABLE" }, { status: 409 }); }
       }
     }
     const idempotencyKey = request.headers.get("idempotency-key")?.slice(0, 200) ?? null;

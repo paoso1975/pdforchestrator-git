@@ -187,6 +187,42 @@ class SplitToolTests(unittest.TestCase):
             self.assertEqual([item["filename"] for item in fallback["files"]], ["prima.pdf", "seconda.pdf"])
 
 
+class PdfInputResolutionTests(unittest.TestCase):
+    def test_input_pdf_does_not_fall_back_to_another_file_when_requested_id_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); source = root / "other.pdf"; make_pdf(source, 1)
+            graph = {"nodes": [{"id": "input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "documento"}}}], "edges": []}
+            with self.assertRaises(ToolError) as caught:
+                WorkflowExecutor(build_registry()).execute(graph, {"documento": "missing-id"}, {"another-file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_args: None)
+            self.assertEqual(caught.exception.code, "INPUT_FILE_NOT_FOUND")
+
+    def test_multiple_input_pdf_blocks_resolve_their_own_api_parameters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); first = root / "first.pdf"; second = root / "second.pdf"; make_pdf(first, 1); make_pdf(second, 2)
+            graph = {"nodes": [
+                {"id": "first-input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "documento"}}},
+                {"id": "second-input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "allegato"}}},
+            ], "edges": []}
+            class TrackingContext(SplitToolTests.PypdfTestContext):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs); self.seen = []
+                def pdf(self, path):
+                    self.seen.append(str(path))
+                    return super().pdf(path)
+            context = TrackingContext(root)
+            WorkflowExecutor(build_registry()).execute(graph, {"documento": "file-a", "allegato": "file-b"}, {"file-a": str(first), "file-b": str(second)}, context, lambda _step: None, lambda *_args: None)
+            self.assertEqual(context.seen, [str(first), str(second)])
+
+    def test_input_pdf_list_keeps_ordered_multi_file_resolution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); first = root / "first.pdf"; second = root / "second.pdf"; make_pdf(first, 1); make_pdf(second, 1)
+            graph = {"nodes": [{"id": "input-list", "data": {"toolId": "input.pdf-list", "toolVersion": "1.0.0", "parameters": {"parameter": "documenti"}}}], "edges": []}
+            steps = []
+            WorkflowExecutor(build_registry()).execute(graph, {"documenti": ["file-b", "file-a"]}, {"file-a": str(first), "file-b": str(second)}, ToolContext(root), steps.append, lambda *_args: None)
+            succeeded = next(step["output"]["pdfs"] for step in steps if step.get("status") == "SUCCEEDED")
+            self.assertEqual([item["fileRef"] for item in succeeded], ["file-b", "file-a"])
+
+
 class OutputFileTests(unittest.TestCase):
     def _run(self, source: Path, context: ToolContext, output_nodes: list[dict], params: dict | None = None):
         input_node = {"id": "input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "document"}}}
@@ -992,7 +1028,7 @@ class WorkflowTests(unittest.TestCase):
             ]
             edges = [{"id": "pdf-output", "source": "input", "target": "output", "sourceHandle": "pdf", "targetHandle": "pdf", "data": {"kind": "data"}}]
             graph = {"nodes": nodes, "edges": edges}
-            steps = []; result = WorkflowExecutor(build_registry()).execute(graph, {}, {"file-id": str(source)}, ToolContext(root), steps.append, lambda *_: None)
+            steps = []; result = WorkflowExecutor(build_registry()).execute(graph, {"documento": "file-id"}, {"file-id": str(source)}, ToolContext(root), steps.append, lambda *_: None)
             self.assertEqual(result["files"][0]["filename"], "result.pdf")
             self.assertEqual(steps[-1]["status"], "SUCCEEDED")
 
@@ -1011,16 +1047,16 @@ class WorkflowTests(unittest.TestCase):
             }
             compiled_plan["planHash"] = hashlib.sha256(_stable_json(compiled_plan).encode("utf-8")).hexdigest()
             version2 = {**graph, "compiledPlan": compiled_plan}
-            result_v2 = WorkflowExecutor(build_registry()).execute(version2, {}, {"file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_: None)
+            result_v2 = WorkflowExecutor(build_registry()).execute(version2, {"documento": "file-id"}, {"file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_: None)
             self.assertEqual(result_v2["files"][0]["filename"], "result.pdf")
             bad_hash = {**compiled_plan, "planHash": "0" * 64}
             with self.assertRaisesRegex(ToolError, "Hash del piano"):
-                WorkflowExecutor(build_registry()).execute({**graph, "compiledPlan": bad_hash}, {}, {"file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_: None)
+                WorkflowExecutor(build_registry()).execute({**graph, "compiledPlan": bad_hash}, {"documento": "file-id"}, {"file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_: None)
             corrupted_plan = {**compiled_plan, "edges": []}
             corrupted_plan["planHash"] = hashlib.sha256(_stable_json({key: value for key, value in corrupted_plan.items() if key != "planHash"}).encode("utf-8")).hexdigest()
             corrupted = {**graph, "compiledPlan": corrupted_plan}
             with self.assertRaisesRegex(ToolError, "numero di edge"):
-                WorkflowExecutor(build_registry()).execute(corrupted, {}, {"file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_: None)
+                WorkflowExecutor(build_registry()).execute(corrupted, {"documento": "file-id"}, {"file-id": str(source)}, ToolContext(root), lambda _step: None, lambda *_: None)
 
     def test_context_variable_binding_and_missing_default(self):
         binding = {"source": "variable", "name": "filename"}

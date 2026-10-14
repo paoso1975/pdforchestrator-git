@@ -9,13 +9,14 @@ import { canonicalJson, parseIdempotencyKey, positiveIntegerConfig, publicBatchS
 import { verifyStoredPdfUpload } from "@/lib/upload-verification";
 import { credentialCanAccessBatchVersion } from "@/lib/credential-scopes";
 import { buildExecutionRequestString, safeExecutionLogValue } from "@/lib/execution-audit";
+import { collectPdfFileReferences, PdfFileReferenceError, validatePdfInputFileRecords } from "@/lib/pdf-file-references";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ batchId: string }> };
 const requestSchema = z.object({ input: z.record(z.string(), z.unknown()) }).strict();
 function validateValue(value: unknown, schema: unknown, path: string): string[] {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
-  const spec = schema as { type?: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; pattern?: string; format?: string; uniqueItems?: boolean; items?: unknown };
+  const spec = schema as { type?: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; pattern?: string; format?: string; contentMediaType?: string; uniqueItems?: boolean; items?: unknown };
   const invalid = () => [`Valore non valido per ${path}`];
   if (spec.enum && !spec.enum.some((item) => JSON.stringify(item) === JSON.stringify(value))) return invalid();
   if (spec.type === "object") {
@@ -35,7 +36,7 @@ function validateValue(value: unknown, schema: unknown, path: string): string[] 
     let patternValid = true;
     if (spec.pattern !== undefined) { try { patternValid = new RegExp(spec.pattern).test(value as string); } catch { patternValid = false; } }
     if (typeof value !== "string" || (spec.minLength !== undefined && value.length < spec.minLength) || (spec.maxLength !== undefined && value.length > spec.maxLength) || !patternValid) return invalid();
-    if (spec.format === "uri" && !z.string().uuid().safeParse(value).success) return [`${path} deve essere un fileId UUID del filesystem`];
+    if (spec.contentMediaType === "application/pdf" && !z.string().uuid().safeParse(value).success) return [`${path} deve essere un fileId UUID del filesystem`];
     if (spec.format === "date-time" && !Number.isFinite(Date.parse(value))) return invalid();
     return [];
   }
@@ -67,17 +68,17 @@ export async function POST(request: Request, context: Context) {
     if (!batchVersion || !await credentialCanAccessBatchVersion(auth.credential.id, batchId, batchVersion.id)) return NextResponse.json({ error: "Batch non trovato o non autorizzato per questa versione." }, { status: 404 });
     const executionInput = applySchemaDefaults(body.input, batchVersion.inputSchema) as Record<string, unknown>;
     const issues = schemaErrors(executionInput, batchVersion.inputSchema); if (issues.length) return NextResponse.json({ error: "Input non valido.", issues }, { status: 400 });
-    const collectFileIds = (value: unknown, schema: unknown): string[] => {
-      if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
-      const spec = schema as { format?: string; type?: string; items?: unknown; properties?: Record<string, unknown> };
-      if (spec.format === "uri") return typeof value === "string" && z.string().uuid().safeParse(value).success ? [value] : [];
-      if (spec.type === "array" && Array.isArray(value)) return value.flatMap((item) => collectFileIds(item, spec.items));
-      if (spec.type === "object" && value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value).flatMap(([key, item]) => collectFileIds(item, spec.properties?.[key]));
-      return [];
-    };
-    const fileIds = [...new Set(collectFileIds(executionInput, batchVersion.inputSchema))];
-    const files = fileIds.length ? await prisma.storedFile.findMany({ where: { id: { in: fileIds }, organizationId: auth.credential.organizationId, credentialId: auth.credential.id, kind: "INPUT", uploadState: "UPLOADED", expiresAt: { gt: new Date() } } }) : [];
-    if (files.length !== fileIds.length) return NextResponse.json({ error: "Un upload è incompleto, scaduto o non accessibile." }, { status: 409 });
+    let fileReferences;
+    try { fileReferences = collectPdfFileReferences(executionInput, batchVersion.inputSchema); }
+    catch (cause) {
+      if (cause instanceof PdfFileReferenceError) return NextResponse.json({ error: cause.message, code: cause.code }, { status: cause.status });
+      throw cause;
+    }
+    const fileIds = [...new Set(fileReferences.map(({ fileId }) => fileId))];
+    const records = fileIds.length ? await prisma.storedFile.findMany({ where: { id: { in: fileIds } } }) : [];
+    const fileValidation = validatePdfInputFileRecords(fileReferences, records, { organizationId: auth.credential.organizationId, credentialId: auth.credential.id });
+    if (!fileValidation.valid) return NextResponse.json({ error: fileValidation.error.message, code: fileValidation.error.code }, { status: fileValidation.error.status });
+    const files = fileValidation.files;
     const storage = createStorageClient();
     for (const file of files) { try { const verification = await verifyStoredPdfUpload(storage, file); if (!verification.valid) return NextResponse.json({ error: "Upload non valido: dimensione, MIME, riferimento o firma PDF non corrispondono.", reason: verification.reason }, { status: 409 }); } catch { return NextResponse.json({ error: "Upload non disponibile sul server." }, { status: 409 }); } }
     const idempotency = parseIdempotencyKey(request.headers.get("idempotency-key"));

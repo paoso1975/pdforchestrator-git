@@ -3,14 +3,20 @@ import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireWorker } from "@/lib/execution-auth";
+import { createStorageClient } from "@/lib/storage";
+import { verifyStoredPdfUpload } from "@/lib/upload-verification";
+import { collectPdfFileReferences, validatePdfInputFileRecords } from "@/lib/pdf-file-references";
 
 export const runtime = "nodejs";
 const schema = z.object({ workerId: z.string().min(1).max(120), leaseSeconds: z.number().int().min(30).max(900).default(120) }).strict();
 
 export async function POST(request: NextRequest) {
   if (!(await requireWorker(request))) return NextResponse.json({ error: "Worker non autorizzato." }, { status: 401 });
+  let claimedExecutionId: string | null = null;
+  let claimedWorkerId = "";
   try {
     const { workerId, leaseSeconds } = schema.parse(await request.json());
+    claimedWorkerId = workerId;
     const job = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw(Prisma.sql`UPDATE "BatchExecution" SET "status" = 'FAILED', "error" = '{"code":"LEASE_EXHAUSTED","message":"Lease scaduto dopo il numero massimo di tentativi."}'::jsonb, "completedAt" = NOW(), "durationMs" = CASE WHEN "startedAt" IS NULL THEN NULL ELSE GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - "startedAt")) * 1000)::int) END, "leaseOwner" = NULL, "leaseExpiresAt" = NULL WHERE "status" = 'RUNNING' AND "leaseExpiresAt" < NOW() AND "attemptCount" >= "maxAttempts"`);
       await tx.$executeRaw(Prisma.sql`UPDATE "BatchExecution" SET "status" = 'CANCELLED', "completedAt" = NOW(), "durationMs" = CASE WHEN "startedAt" IS NULL THEN NULL ELSE GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - "startedAt")) * 1000)::int) END, "leaseOwner" = NULL, "leaseExpiresAt" = NULL WHERE "status" = 'CANCEL_REQUESTED' AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt" < NOW())`);
@@ -25,17 +31,56 @@ export async function POST(request: NextRequest) {
       return tx.batchExecution.findUnique({ where: { id }, include: { batchVersion: true } });
     });
     if (!job) return NextResponse.json({ job: null });
+    claimedExecutionId = job.id;
     const input = job.input as Record<string, unknown>;
-    const collectFileIds = (value: unknown, schema: unknown): string[] => {
-      if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
-      const spec = schema as { format?: string; type?: string; items?: unknown; properties?: Record<string, unknown> };
-      if (spec.format === "uri") return typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value) ? [value] : [];
-      if (spec.type === "array" && Array.isArray(value)) return value.flatMap((item) => collectFileIds(item, spec.items));
-      if (spec.type === "object" && value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value).flatMap(([key, item]) => collectFileIds(item, spec.properties?.[key]));
-      return [];
-    };
-    const fileIds = [...new Set(collectFileIds(input, job.batchVersion.inputSchema))];
-    const files = await prisma.storedFile.findMany({ where: { id: { in: fileIds }, organizationId: job.organizationId, kind: "INPUT", uploadState: "UPLOADED", expiresAt: { gt: new Date() } } });
+    const references = collectPdfFileReferences(input, job.batchVersion.inputSchema);
+    const fileIds = [...new Set(references.map(({ fileId }) => fileId))];
+    const records = fileIds.length ? await prisma.storedFile.findMany({ where: { id: { in: fileIds } } }) : [];
+    const validation = validatePdfInputFileRecords(references, records, { organizationId: job.organizationId });
+    if (!validation.valid) {
+      await failClaimedJob(job.id, workerId, validation.error.code, validation.error.message);
+      return NextResponse.json({ job: null });
+    }
+    const storage = createStorageClient();
+    for (const file of validation.files) {
+      try {
+        const result = await verifyStoredPdfUpload(storage, file);
+        if (!result.valid) {
+          await failClaimedJob(job.id, workerId, result.reason, `Il PDF ${file.filename} non è disponibile o non supera le verifiche Cubbit (${result.reason}).`);
+          return NextResponse.json({ job: null });
+        }
+      } catch {
+        await failClaimedJob(job.id, workerId, "FILE_UNAVAILABLE", `Il PDF ${file.filename} non è disponibile nel bucket Cubbit.`);
+        return NextResponse.json({ job: null });
+      }
+    }
+    const files = validation.files;
     return NextResponse.json({ job, files: files.map((file) => ({ ...file, sizeBytes: file.sizeBytes.toString() })) });
-  } catch (error) { console.error("Worker claim failed", error); return NextResponse.json({ error: "Richiesta claim non valida." }, { status: 400 }); }
+  } catch (error) {
+    console.error("Worker claim failed", error);
+    if (claimedExecutionId) {
+      try { await failClaimedJob(claimedExecutionId, claimedWorkerId, "CLAIM_VALIDATION_FAILED", "Impossibile verificare i file PDF richiesti per il job."); }
+      catch (failureError) { console.error("Could not fail claimed job after validation error", failureError); }
+      return NextResponse.json({ job: null });
+    }
+    return NextResponse.json({ error: "Richiesta claim non valida." }, { status: 400 });
+  }
+}
+
+async function failClaimedJob(executionId: string, workerId: string, code: string, message: string) {
+  await prisma.$transaction(async (tx) => {
+    const changed = await tx.batchExecution.updateMany({
+      where: { id: executionId, status: "RUNNING", ...(workerId ? { leaseOwner: workerId } : {}) },
+      data: {
+        status: "FAILED",
+        error: { code, message },
+        completedAt: new Date(),
+        durationMs: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+      },
+    });
+    if (changed.count) await tx.executionEvent.create({ data: { executionId, type: "FAILED", payload: { code, message, source: "WORKER_CLAIM_FILE_VALIDATION" } } });
+  });
 }
