@@ -360,6 +360,7 @@ def _validate_for_each_item(item: Any, item_type: str, columns: list[dict[str, A
         "boolean": lambda value: isinstance(value, bool),
         "object": lambda value: isinstance(value, dict),
         "array": lambda value: isinstance(value, list),
+        "document": lambda value: isinstance(value, dict),
     }
     if item_type not in valid or not valid[item_type](item):
         raise ToolError("INVALID_ITEM", f"loop.forEach attende item di tipo {item_type}.")
@@ -711,11 +712,27 @@ class WorkflowExecutor:
                     if len(source_items) > 10000: raise ToolError("ITERATION_LIMIT", "La sorgente loop.forEach supera il limite di 10000 righe.")
                     item_type = parameters.get("itemType", "object"); columns = parameters.get("columns", []); filter_config = parameters.get("filter")
                     limit = parameters.get("maxIterations", 1000)
-                    if item_type not in ("string", "number", "boolean", "object", "array") or not isinstance(columns, list) or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+                    if item_type not in ("string", "number", "boolean", "object", "array", "document") or not isinstance(columns, list) or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
                         raise ToolError("INVALID_PARAMS", "Configurazione loop.forEach non valida: tipo elemento o maxIterations fuori limite.")
                     names = [column.get("name") for column in columns if isinstance(column, dict)]
                     if len(names) != len(columns) or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or name in ("__proto__", "prototype", "constructor") for name in names) or len(set(names)) != len(names) or item_type != "object" and columns:
                         raise ToolError("INVALID_PARAMS", "Le colonne devono essere univoche e sono ammesse solo per item object.")
+                    if item_type == "document" and filter_config is not None:
+                        raise ToolError("INVALID_PARAMS", "I PDF non supportano il filtro per colonna di loop.forEach.")
+                    if item_type == "document":
+                        allowed_paths = {str(Path(path).resolve()) for path in input_files.values()}
+                        workdir = Path(context.workdir).resolve()
+                        for item in source_items:
+                            _validate_for_each_item(item, item_type, columns)
+                            path = item.get("path") if isinstance(item, dict) else None
+                            filename = item.get("filename") if isinstance(item, dict) else None
+                            file_ref = item.get("fileRef") if isinstance(item, dict) else None
+                            if not isinstance(path, str) or not isinstance(filename, str) or not filename or Path(filename).name != filename or not isinstance(file_ref, str) or not file_ref:
+                                raise ToolError("INVALID_DOCUMENT_ITEM", "Ogni elemento document richiede path, filename e fileRef validi.")
+                            resolved = Path(path).resolve()
+                            if not resolved.is_file() or (str(resolved) not in allowed_paths and not resolved.is_relative_to(workdir)):
+                                raise ToolError("INVALID_DOCUMENT_ITEM", "Il documento del loop non è un PDF disponibile nell'area isolata del job.")
+                            context.pdf(resolved)
                     if filter_config is not None:
                         if not isinstance(filter_config, dict) or filter_config.get("column") not in (names if item_type == "object" else ["$item"]):
                             raise ToolError("INVALID_PARAMS", "Il filtro loop.forEach indica una colonna non dichiarata.")
@@ -748,6 +765,8 @@ class WorkflowExecutor:
                     body_edges = [edge for edge in edges if edge.get("target") in body_ids]
                     completed_body.update(body_ids)
                     loop_value: dict[str, Any] = {"items": source_items, "count": len(indexed_items), "body": {"active": True}}
+                    if item_type == "document": loop_value["documents"] = []
+                    if version == "1.1.0": loop_value["results"] = []
                     values[node_id] = loop_value
                     loop_frame: dict[str, Any] = {}
                     for iteration, (source_index, item) in enumerate(indexed_items):
@@ -757,10 +776,37 @@ class WorkflowExecutor:
                         iteration_budget[0] -= 1
                         loop_scope = {"item": item, "index": source_index, "_loopId": node_id}
                         loop_value.update({"item": item, "index": source_index})
+                        if item_type == "document": loop_value["document"] = str(Path(item["path"]).resolve())
                         for body_id in body_ids: values.pop(body_id, None)
                         report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": int(iteration * 100 / max(1, len(indexed_items))), "input": _audit_safe(_safe(tool_inputs)), "parameters": _audit_safe(_safe(parameters)), "variablesIn": _audit_snapshot(variables, variable_frames, loop_scope), "variablesOut": _audit_snapshot(variables, [*variable_frames, loop_frame], loop_scope), "executionString": _execution_summary(node_id, tool_id, version, parameters, tool_inputs, loop_scope), "event": "STEP_ITERATION", "output": {"index": source_index, "iteration": iteration + 1, "count": len(indexed_items), "maxIterations": limit}})
                         body_result = self.execute({"nodes": body_nodes, "edges": body_edges}, api_input, input_files, context, report_step, heartbeat, _values=values, _loop_scope=loop_scope, _internal=True, _depth=_depth + 1, _deferred_deletions=deferred_deletions, _deferred_bookmarks=deferred_bookmarks, _variables=variables, _iteration_budget=iteration_budget, _control_flow=control_flow, _variable_frames=[*variable_frames, loop_frame])
                         pages += body_result.get("pagesProcessed", 0)
+                        if item_type == "document":
+                            document_results = loop_value["documents"]
+                            seen_paths = {str(Path(doc["path"]).resolve()) for doc in document_results if isinstance(doc, dict) and isinstance(doc.get("path"), str)}
+                            for body_id in body_ids:
+                                node_outputs = values.get(body_id, {})
+                                if not isinstance(node_outputs, dict): continue
+                                for port in ("pdf", "document"):
+                                    candidate = node_outputs.get(port)
+                                    if not isinstance(candidate, str) or not Path(candidate).is_file(): continue
+                                    if any(edge.get("source") == body_id and edge.get("sourceHandle") == port and edge.get("target") in body_ids for edge in edges): continue
+                                    resolved_candidate = str(Path(candidate).resolve())
+                                    if resolved_candidate in seen_paths: continue
+                                    seen_paths.add(resolved_candidate)
+                                    document_results.append({"path": candidate, "filename": item["filename"], "fileRef": item["fileRef"], "contentType": "application/pdf"})
+                        if version == "1.1.0":
+                            visible_outputs = {}
+                            for body_id in sorted(body_ids):
+                                node_outputs = values.get(body_id, {})
+                                if not isinstance(node_outputs, dict): continue
+                                public_values = {key: value for key, value in node_outputs.items() if key not in {"pdf", "document", "pdfs", "documents", "artifact", "manifest", "success", "error", "body", "after"}}
+                                if public_values: visible_outputs[body_id] = public_values
+                            result_item = {"index": source_index, "outputs": visible_outputs}
+                            if item_type == "document": result_item["item"] = {"fileRef": item["fileRef"], "filename": item["filename"]}
+                            else: result_item["item"] = item
+                            loop_value["results"].append(result_item)
+                        if version == "1.1.0" and isinstance(body_result.get("files"), list): outputs.extend(body_result["files"])
                         completed_body.update(body_ids)
                         context.check()
                         heartbeat(int((position + (iteration + 1) / max(1, len(indexed_items))) / max(1, len(order)) * 95), node_id, pages)

@@ -1290,6 +1290,62 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ToolError, "annullata"):
                 WorkflowExecutor(build_registry()).execute({"nodes": nodes, "edges": edges}, {}, {"file": str(source)}, cancelled, lambda *_: None, lambda *_: None)
 
+    def test_for_each_processes_pdf_list_and_collects_qr_read_all_results(self):
+        import zxingcpp
+        from PIL import Image
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            files = {"file-a": root / "alpha.pdf", "file-b": root / "beta.pdf"}
+            for path in files.values(): make_pdf(path, 1)
+            qr_images = {}
+            for file_ref, value in (("file-a", "QR-ALPHA"), ("file-b", "QR-BETA")):
+                image = Image.fromarray(zxingcpp.create_barcode(value, zxingcpp.BarcodeFormat.QRCode).to_image(256)).convert("RGB")
+                image_path = root / f"{file_ref}.png"; image.save(image_path); qr_images[file_ref] = image_path
+            source_filenames = {str(path.resolve()): path.name for path in files.values()}
+            source_refs = {str(path.resolve()): file_ref for file_ref, path in files.items()}
+            steps = []
+            graph = {
+                "nodes": [
+                    {"id": "files", "data": {"toolId": "input.pdf-list", "toolVersion": "1.0.0", "parameters": {"parameter": "documents"}}},
+                    {"id": "each", "data": {"toolId": "loop.forEach", "toolVersion": "1.1.0", "parameters": {
+                        "source": {"source": "node", "nodeId": "files", "port": "pdfs"}, "itemType": "document", "columns": [], "maxIterations": 10,
+                    }}},
+                    {"id": "qr", "data": {"toolId": "pdf.qr.readAll", "toolVersion": "1.0.0", "parameters": {"startPage": 1, "dpi": 200, "concurrency": 1}}},
+                    {"id": "metadata", "data": {"toolId": "pdf.write-metadata", "toolVersion": "1.0.0", "parameters": {
+                        "author": {"source": "api", "name": "author"}, "title": {"source": "api", "name": "title"}, "subject": {"source": "api", "name": "subject"},
+                    }}},
+                    {"id": "output", "data": {"toolId": "output.pdf", "toolVersion": "1.1.0", "parameters": {}}},
+                ],
+                "edges": [
+                    {"source": "files", "target": "each", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "each", "target": "qr", "sourceHandle": "document", "targetHandle": "pdf"},
+                    {"source": "each", "target": "qr", "sourceHandle": "body", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "qr", "target": "metadata", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "each", "target": "metadata", "sourceHandle": "document", "targetHandle": "pdf"},
+                    {"source": "each", "target": "output", "sourceHandle": "documents", "targetHandle": "documents"},
+                    {"source": "each", "target": "output", "sourceHandle": "after", "targetHandle": "run", "data": {"kind": "control"}},
+                ],
+            }
+            context = ToolContext(root)
+            context.source_filenames = source_filenames
+            context.source_file_refs = source_refs
+
+            def render(_context, pdf, _page, _prefix, dpi=None):
+                self.assertEqual(dpi, 200)
+                file_ref = source_refs[str(Path(pdf).resolve())]
+                return qr_images[file_ref]
+
+            with patch("pdforchestrator.tools._render_page", side_effect=render):
+                result = WorkflowExecutor(build_registry()).execute(graph, {"documents": ["file-a", "file-b"], "author": "Test Author", "title": "Batch Title", "subject": "Per document"}, {key: str(path) for key, path in files.items()}, context, steps.append, lambda *_: None)
+            loop_completion = next(step for step in reversed(steps) if step.get("nodeId") == "each" and step.get("status") == "SUCCEEDED")
+            results = loop_completion["output"]["results"]
+            self.assertEqual([row["item"]["fileRef"] for row in results], ["file-a", "file-b"])
+            self.assertEqual([row["outputs"]["qr"]["codes"][0]["value"] for row in results], ["QR-ALPHA", "QR-BETA"])
+            self.assertEqual([item["filename"] for item in result["files"]], ["alpha.pdf", "beta.pdf"])
+            self.assertEqual([PdfReader(item["path"]).metadata.author for item in result["files"]], ["Test Author", "Test Author"])
+            self.assertEqual([PdfReader(item["path"]).metadata.title for item in result["files"]], ["Batch Title", "Batch Title"])
+
     def test_for_each_consumes_real_qr_tool_rows_with_typed_filter_and_scope(self):
         import qrcode
         from unittest.mock import patch

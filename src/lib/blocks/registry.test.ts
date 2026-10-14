@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { blockRegistry, getBlockDefinition, latestBlockRegistry, toBlockDefinitionDto } from "@/lib/blocks/registry";
+import { validateForEachConfiguration } from "@/lib/blocks/for-each";
 
 test("registry exposes unique latest types, semantic versions and typed ports", () => {
   assert.equal(new Set(latestBlockRegistry.map((block) => block.type)).size, latestBlockRegistry.length);
@@ -109,6 +110,18 @@ test("forEach declares an array source, typed columns, bounded iterations and bo
   assert.deepEqual(block.outputs.filter((port) => ["items", "count", "body", "after"].includes(port.id)).map(({ id, type }) => [id, type]), [
     ["items", "array"], ["count", "number"], ["body", "control"], ["after", "control"],
   ]);
+});
+
+test("forEach v1.1 bridges a documentList to a current PDF, collected PDFs and iteration results", () => {
+  const legacy = getBlockDefinition("loop.forEach", "1.0.0");
+  const current = getBlockDefinition("loop.forEach", "1.1.0");
+  assert.ok(legacy); assert.ok(current);
+  assert.equal(legacy.outputs.some((port) => port.id === "document"), false);
+  assert.deepEqual(current.outputs.filter((port) => ["document", "documents", "results"].includes(port.id)).map(({ id, type }) => [id, type]), [
+    ["document", "document"], ["documents", "documentList"], ["results", "array"],
+  ]);
+  assert.equal(current.parametersSchema.safeParse({ source: { source: "node", nodeId: "files", port: "pdfs" }, itemType: "document", maxIterations: 10 }).success, true);
+  assert.deepEqual(validateForEachConfiguration({ source: { source: "node", nodeId: "files", port: "pdfs" }, itemType: "document", filter: { column: "filename", operator: "contains", value: ".pdf" } }, true), ["I PDF non supportano il filtro per colonna di loop.forEach."]);
 });
 
 test("lookup and variable blocks expose typed, validated contracts", () => {

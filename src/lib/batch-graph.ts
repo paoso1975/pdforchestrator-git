@@ -199,7 +199,7 @@ export function validateGraph(nodes: BatchNode[], edges: BatchEdge[]) {
     }
     const conditionIssues = ["logic.conditionGroup", "loop.while", "loop.repeatUntil"].includes(tool.type) ? validateConditionGroupAst(parameters.condition) : [];
     if (conditionIssues.length) issues.push(...conditionIssues.map((issue) => `${node.data.label}: ${issue}`));
-    if (tool.type === "loop.forEach") issues.push(...validateForEachConfiguration({ ...tool.defaults, ...node.data.parameters }).map((issue) => `${node.data.label}: ${issue}`));
+    if (tool.type === "loop.forEach") issues.push(...validateForEachConfiguration({ ...tool.defaults, ...node.data.parameters }, tool.version === "1.1.0").map((issue) => `${node.data.label}: ${issue}`));
     if (tool.type === "flow.jumpPage") issues.push(...validateJumpPageParameters(node.data.parameters).map((issue) => `${node.data.label}: ${issue}`));
     const parsed = conditionIssues.length ? null : tool.parametersSchema.safeParse({ ...tool.defaults, ...parameters });
     if (parsed && !parsed.success) for (const issue of parsed.error.issues) {

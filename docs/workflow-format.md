@@ -73,3 +73,9 @@ La serializzazione canonica ordina le chiavi degli oggetti e ordina nodi/edge in
 
 Il worker supporta i manifest legacy formato 1 e il formato 2. Per il formato 2 verifica gli hash, la copertura esatta di nodi ed edge, l'ordine topologico deterministico e la corrispondenza degli handler con il proprio registry; rifiuta il job se il piano non corrisponde al grafo pubblicato. Il formato 1 mantiene il tie-break storico, per non invalidare versioni già pubblicate.
 
+# Ciclo su PDF (`loop.forEach@1.1.0`)
+
+La versione `1.0.0` resta invariata per i cicli JSON già pubblicati. La versione `1.1.0` aggiunge `itemType: "document"`, utilizzabile con un binding a un output `documentList` (ad esempio la porta `pdfs` di `input.pdf-list`). Nel ramo `body`, la porta dati `document` espone il PDF corrente alle lavorazioni singole. Se il ramo produce PDF, il loop li raccoglie nella porta `documents`; collegandola a `output.pdf@1.1.0` dopo la porta di controllo `after` si ottiene un artifact per ogni elemento. `results` raccoglie inoltre gli output non-file dei nodi del ramo per ciascuna iterazione, ad esempio i codici rilevati da `pdf.qr.readAll`.
+
+Il worker verifica che ogni elemento documento contenga `path`, `filename` e `fileRef`, che il file esista nell'area temporanea isolata e che sia un PDF leggibile. Il limite `maxIterations` resta 1–1000. Il filtro per colonna non si applica ai documenti; per gli array JSON, incluse le righe di `pdf.qr.readAll`, `itemType: "object"`, le colonne tipizzate e i filtri esistenti mantengono il comportamento precedente.
+

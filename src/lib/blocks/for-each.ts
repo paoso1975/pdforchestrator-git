@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { parameterBindingSchema } from "@/lib/blocks/bindings";
 
-export const forEachValueTypeSchema = z.enum(["string", "number", "boolean", "object", "array"]);
+const forEachTypes = ["string", "number", "boolean", "object", "array"] as const;
+const forEachDocumentTypes = [...forEachTypes, "document"] as const;
+export const forEachValueTypeSchema = z.enum(forEachTypes);
+export const forEachDocumentValueTypeSchema = z.enum(forEachDocumentTypes);
 export const forEachColumnSchema = z.object({
   name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).refine((name) => !["__proto__", "prototype", "constructor"].includes(name)),
   type: forEachValueTypeSchema,
@@ -13,22 +16,28 @@ export const forEachFilterSchema = z.object({
   value: z.json().optional(),
 }).strict();
 
-export const forEachParametersSchema = z.object({
-  source: parameterBindingSchema.describe("Binding a un array JSON o a una tabella { rows: [...] } (ad esempio codes di pdf.detect-qr)."),
-  itemType: forEachValueTypeSchema.default("object").describe("Tipo degli elementi dell'array."),
-  columns: z.array(forEachColumnSchema).max(64).default([]).describe("Colonne richieste e tipizzate per accedere a item.nomeColonna nel ramo body."),
-  filter: forEachFilterSchema.optional().describe("Filtro dichiarativo applicato prima delle iterazioni; usare $item per elementi semplici."),
-  maxIterations: z.number().int().positive().max(1000).default(1000).describe("Numero massimo di elementi elaborati dopo il filtro (da 1 a 1000)."),
-}).strict();
+function createForEachParametersSchema<T extends readonly [string, ...string[]]>(itemTypes: T) {
+  return z.object({
+    source: parameterBindingSchema.describe("Binding a un array JSON o a una tabella { rows: [...] } (ad esempio codes di pdf.detect-qr)."),
+    itemType: z.enum(itemTypes).default("object").describe("Tipo degli elementi dell'array; document seleziona ogni PDF dalla lista prodotta da Input multiplo PDF."),
+    columns: z.array(forEachColumnSchema).max(64).default([]).describe("Colonne richieste e tipizzate per accedere a item.nomeColonna nel ramo body."),
+    filter: forEachFilterSchema.optional().describe("Filtro dichiarativo applicato prima delle iterazioni; usare $item per elementi semplici."),
+    maxIterations: z.number().int().positive().max(1000).default(1000).describe("Numero massimo di elementi elaborati dopo il filtro (da 1 a 1000)."),
+  }).strict();
+}
 
-export function validateForEachConfiguration(value: unknown): string[] {
-  const parsed = forEachParametersSchema.safeParse(value);
+export const forEachParametersSchema = createForEachParametersSchema(forEachTypes);
+export const forEachDocumentParametersSchema = createForEachParametersSchema(forEachDocumentTypes);
+
+export function validateForEachConfiguration(value: unknown, allowDocuments = false): string[] {
+  const parsed = (allowDocuments ? forEachDocumentParametersSchema : forEachParametersSchema).safeParse(value);
   if (!parsed.success) return parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
-  const { itemType, columns, filter } = parsed.data;
+  const { itemType, columns, filter } = parsed.data as z.infer<typeof forEachDocumentParametersSchema>;
   const names = columns.map((column) => column.name);
   const issues: string[] = [];
   if (new Set(names).size !== names.length) issues.push("Le colonne di item devono avere nomi univoci.");
   if (itemType !== "object" && columns.length) issues.push("Le colonne sono ammesse solo quando itemType è object.");
+  if (itemType === "document" && filter) return [...issues, "I PDF non supportano il filtro per colonna di loop.forEach."];
   if (filter && filter.column !== "$item" && !names.includes(filter.column)) issues.push(`La colonna filtro '${filter.column}' non è dichiarata.`);
   if (filter && itemType !== "object" && filter.column !== "$item") issues.push("Gli elementi semplici si filtrano con la colonna $item.");
   if (filter && itemType === "object" && filter.column === "$item") issues.push("Per gli oggetti il filtro deve indicare una colonna dichiarata.");

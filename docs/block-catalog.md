@@ -108,6 +108,40 @@ Schema parametri:
 }
 ```
 
+## `pdf.output.apiName@1.0.0` — Output PDF con nome API
+
+Categoria: Output. Icona Lucide: `FileOutput`. Handler: `pdf.output` (orchestrator).
+
+Porte input: `run: control (multiplo)`, `document: document (obbligatorio)`.
+Porte output: `artifact: object`, `manifest: object`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "filename": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\]+\\.pdf$"
+    }
+  },
+  "required": [
+    "filename"
+  ],
+  "additionalProperties": false
+}
+```
+
 ## `pdf.output@1.0.0` — Output file PDF
 
 Categoria: Output. Icona Lucide: `FileOutput`. Handler: `pdf.output` (orchestrator).
@@ -974,6 +1008,79 @@ Schema parametri:
   },
   "required": [
     "page",
+    "dpi",
+    "preprocess"
+  ],
+  "additionalProperties": false
+}
+```
+
+## `pdf.qr.removeMatchedPages@1.0.0` — Abbina QR, elimina pagina e segnalibro
+
+Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.qr.removeMatchedPages` (python).
+
+Porte input: `run: control (multiplo)`, `pdf: document (obbligatorio)`.
+Porte output: `pdf: document`, `matches: array`, `removedPages: array`, `bookmarks: array`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{
+  "dpi": 200,
+  "preprocess": "none"
+}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "records": {
+      "minItems": 1,
+      "maxItems": 10000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "testoQR": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "nomeQR": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "testoQR",
+          "nomeQR"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "dpi": {
+      "default": 200,
+      "type": "integer",
+      "minimum": 72,
+      "maximum": 600
+    },
+    "preprocess": {
+      "default": "none",
+      "type": "string",
+      "enum": [
+        "none",
+        "grayscale",
+        "autocontrast"
+      ]
+    }
+  },
+  "required": [
+    "records",
     "dpi",
     "preprocess"
   ],
@@ -1908,12 +2015,12 @@ Schema parametri:
 }
 ```
 
-## `loop.forEach@1.0.0` — Per ogni elemento
+## `loop.forEach@1.1.0` — Per ogni elemento o PDF
 
 Categoria: loop. Icona Lucide: `Repeat2`. Handler: `loop.forEach` (orchestrator).
 
 Porte input: `run: control (multiplo)`.
-Porte output: `items: array`, `count: number`, `body: control`, `after: control`, `success: control`, `error: control`.
+Porte output: `items: array`, `count: number`, `document: document`, `documents: documentList`, `results: array`, `body: control`, `after: control`, `success: control`, `error: control`.
 
 Default:
 
@@ -2098,14 +2205,15 @@ Schema parametri:
     },
     "itemType": {
       "default": "object",
-      "description": "Tipo degli elementi dell'array.",
+      "description": "Tipo degli elementi dell'array; document seleziona ogni PDF dalla lista prodotta da Input multiplo PDF.",
       "type": "string",
       "enum": [
         "string",
         "number",
         "boolean",
         "object",
-        "array"
+        "array",
+        "document"
       ]
     },
     "columns": {

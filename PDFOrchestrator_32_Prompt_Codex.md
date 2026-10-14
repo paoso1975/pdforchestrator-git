@@ -452,3 +452,27 @@ Aggiungi alla pagina /dashboard/execute nella terza colonna "output" un textbox 
 - recepimento parametri di ingresso API
 per ogni blocco operativo, indicare gli input, gli output, se si creano variabili interne, se si attiva il run, se si attivano gli error schematizzando in testo e mettando i nomi dei blocchi e dei campi presenti nel batch. Utilizza una textbox RTF così puoi indicare in grassetto il cambio blocco e in sottolineato i cambi di stato. Aggiungi anche il pulsante copia per facilitare il debug e la visione del log.
 CRITERI DI ACCETTAZIONE: l implementazione è persistente, tipizzata, testata, con errori leggibili e nessun mock nel percorso produttivo.
+
+# ** Prompt 37 - Ciclo per ogni file PDF
+## Prompt 10 — Ciclo PER OGNI PAGINA
+# ** ** ** ** ** ** ** ** ** ** ** FATTO ** ** ** ** ** ** ** ** ** ** ** 
+```text
+Sei Codex in VS Code nel repository Next.js di PDFOrchestrator. Prima ispeziona package.json, struttura src/app, Prisma, auth, API e worker esistenti. Non sovrascrivere funzioni funzionanti; riusa convenzioni, dipendenze e librerie già installate. Implementa realmente, non solo pseudocodice. Se mancano decisioni architetturali scegli soluzioni modulari e documentale. Mantieni TypeScript strict, validazione Zod, RBAC e multi-tenant se presenti, transazioni dove necessarie. Non eseguire codice utente dinamico (eval, Function, JS arbitrario). Scrivi test automatici, esegui lint/typecheck/test disponibili e riferisci file cambiati, migrazioni, comandi e limiti.
+
+OBIETTIVO: Ciclo PER OGNI PAGINA
+
+Blocco loop.eachPage con document, start/end/step, currentPage, pageId stabile, pageCount, index, porte body/after, scope variabili e snapshot pagine. Gestisci documenti modificati: raccolta azioni differite o identificativi stabili, maxIterations, cancellation e progress. Test eliminazioni senza slittamento indici.
+
+CRITERI DI ACCETTAZIONE: l implementazione è persistente, tipizzata, testata, con errori leggibili e nessun mock nel percorso produttivo.
+```
+
+## Prompt 11 — Ciclo su elenco e righe
+# ** ** ** ** ** ** ** ** ** ** ** FATTO ** ** ** ** ** ** ** ** ** ** ** 
+```text
+Sei Codex in VS Code nel repository Next.js di PDFOrchestrator. Prima ispeziona package.json, struttura src/app, Prisma, auth, API e worker esistenti. Non sovrascrivere funzioni funzionanti; riusa convenzioni, dipendenze e librerie già installate. Implementa realmente, non solo pseudocodice. Se mancano decisioni architetturali scegli soluzioni modulari e documentale. Mantieni TypeScript strict, validazione Zod, RBAC e multi-tenant se presenti, transazioni dove necessarie. Non eseguire codice utente dinamico (eval, Function, JS arbitrario). Scrivi test automatici, esegui lint/typecheck/test disponibili e riferisci file cambiati, migrazioni, comandi e limiti.
+
+OBIETTIVO: Ciclo per ogni file PDF
+
+Blocco loop.forEach su PDF list, elemento di congiunzione tra input di PDF multiplo e le lavorazioni sul singolo PDF. Test su output pdf.qr.readAll e liste API.
+
+CRITERI DI ACCETTAZIONE: l implementazione è persistente, tipizzata, testata, con errori leggibili e nessun mock nel percorso produttivo.

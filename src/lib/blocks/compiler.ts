@@ -92,6 +92,10 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
       scope.set("currentPage", "number"); scope.set("pageId", "string"); scope.set("pageCount", "number"); scope.set("index", "number");
     } else if (loop.data.toolId === "loop.forEach") {
       scope.set("item", "object"); scope.set("index", "number");
+      if (loop.data.parameters.itemType === "document") {
+        scope.set("item.fileRef", "string"); scope.set("item.filename", "string"); scope.set("item.path", "string");
+        scope.set("document", "document");
+      }
       const raw = loop.data.parameters.columns;
       if (Array.isArray(raw)) for (const column of raw) {
         if (column && typeof column === "object" && typeof column.name === "string" && typeof column.type === "string") scope.set(`item.${column.name}`, column.type);
@@ -197,7 +201,8 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
       inspect(combined.condition as ConditionAst, "condition");
     }
     if (definition.type === "loop.forEach") {
-      const loopIssues = validateForEachConfiguration(combined);
+      const isDocumentLoop = definition.version === "1.1.0" && combined.itemType === "document";
+      const loopIssues = validateForEachConfiguration(combined, definition.version === "1.1.0");
       if (loopIssues.length) throw new BlockCompileError(loopIssues.map((issue) => `${node.data.label}: ${issue}`));
       const source = combined.source;
       if (isParameterBinding(source)) {
@@ -209,6 +214,20 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
           sourceType = sourceDefinition?.outputs.find((port) => port.id === source.port)?.type;
         } else if (source.source === "constant") sourceType = Array.isArray(source.value) || source.value && typeof source.value === "object" && Array.isArray((source.value as { rows?: unknown }).rows) ? "array" : undefined;
         if (sourceType && !["array", "documentList", "pdf-list", "json"].includes(sourceType)) throw new BlockCompileError([`${node.data.label}: source deve risolvere a un array o a una tabella JSON, ricevuto ${sourceType}.`]);
+        if (isDocumentLoop) {
+          const sourceNode = source.source === "node" ? byId.get(source.nodeId) : undefined;
+          const sourceDefinition = sourceNode && getBlockDefinition(sourceNode.data.toolId, sourceNode.data.toolVersion);
+          if (source.source !== "node" || sourceDefinition?.outputs.find((port) => port.id === source.port)?.type !== "documentList") {
+            throw new BlockCompileError([`${node.data.label}: itemType document richiede un output documentList di un nodo precedente, come input.pdf-list.`]);
+          }
+          for (const edge of edges.filter((candidate) => candidate.source === nodeId && candidate.sourceHandle === "document")) {
+            if (!loopRegionsRaw.find((region) => region.nodeId === nodeId)?.bodyNodeIds.has(edge.target)) {
+              throw new BlockCompileError([`${node.data.label}: la porta document è disponibile solo nel ramo body del ciclo.`]);
+            }
+          }
+        } else if (sourceType === "documentList" || edges.some((edge) => edge.source === nodeId && edge.sourceHandle === "document")) {
+          throw new BlockCompileError([`${node.data.label}: una documentList richiede itemType document e la porta document v1.1.0.`]);
+        }
       }
     }
     if (definition.type === "flow.jumpPage") {

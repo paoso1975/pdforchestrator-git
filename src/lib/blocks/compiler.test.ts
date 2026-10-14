@@ -209,6 +209,59 @@ test("compiles forEach item and typed column bindings only within its body", () 
   assert.throws(() => compileGraph([input, loop, rotate, output], edges.filter((edge) => edge.id !== "loop-body"), { apiParameters: ["rows"] }), /fuori scope/);
 });
 
+test("compiles an API PDF list through forEach document into per-file operations and output collection", () => {
+  const files = node("input.pdf-list", 0), each = node("loop.forEach", 1), metadata = node("pdf.write-metadata", 2), output = node("output.pdf", 3);
+  each.data.parameters = {
+    source: { source: "node", nodeId: files.id, port: "pdfs" }, itemType: "document", columns: [], maxIterations: 100,
+  };
+  metadata.data.parameters = {
+    author: { source: "api", name: "author" },
+    title: { source: "api", name: "title" },
+    subject: { source: "api", name: "subject" },
+  };
+  output.data.parameters.filename = "ignored-for-document-list.pdf";
+  const edges: BatchEdge[] = [
+    { id: "files-run-loop", source: files.id, target: each.id, sourceHandle: "success", targetHandle: "run", data: { kind: "control" } },
+    { id: "loop-current-pdf", source: each.id, target: metadata.id, sourceHandle: "document", targetHandle: "pdf" },
+    { id: "loop-body-metadata", source: each.id, target: metadata.id, sourceHandle: "body", targetHandle: "run", data: { kind: "control" } },
+    { id: "loop-documents-output", source: each.id, target: output.id, sourceHandle: "documents", targetHandle: "documents" },
+    { id: "loop-after-output", source: each.id, target: output.id, sourceHandle: "after", targetHandle: "run", data: { kind: "control" } },
+  ];
+  const apiParameters = ["files", "author", "title", "subject"];
+  const plan = compileGraph([files, each, metadata, output], edges, {
+    apiParameters,
+    apiParameterTypes: { files: "pdf-list", author: "string", title: "string", subject: "string" },
+  });
+  assert.equal(plan.blocks.find((block) => block.nodeId === each.id)?.version, "1.1.0");
+  assert.deepEqual(plan.blocks.find((block) => block.nodeId === each.id)?.parameters.itemType, "document");
+  assert.deepEqual(plan.blocks.find((block) => block.nodeId === metadata.id)?.parameters.title, { source: "api", name: "title" });
+  assert.deepEqual(plan.controlFlow.loops.find((loop) => loop.nodeId === each.id)?.bodyNodeIds, [metadata.id]);
+  assert.throws(() => {
+    each.data.parameters.source = { source: "api", name: "files" };
+    compileGraph([files, each, metadata, output], edges, { apiParameters, apiParameterTypes: { files: "pdf-list", author: "string", title: "string", subject: "string" } });
+  }, /output documentList di un nodo precedente/);
+});
+
+test("forEach v1.1 continues to compile QR-code output arrays as object rows", () => {
+  const input = node("input.pdf", 0), qr = node("pdf.qr.readAll", 1), each = node("loop.forEach", 2), setter = node("data.setVariable", 3), output = node("output.pdf", 4);
+  each.data.parameters = {
+    source: { source: "node", nodeId: qr.id, port: "codes" }, itemType: "object",
+    columns: [{ name: "page", type: "number" }, { name: "value", type: "string" }, { name: "format", type: "string" }], maxIterations: 100,
+  };
+  setter.data.parameters = { name: "qrValue", scope: "loop", valueType: "string", value: { source: "loop", name: "item", path: ["value"] } };
+  const edges: BatchEdge[] = [
+    { id: "input-qr", source: input.id, target: qr.id, sourceHandle: "pdf", targetHandle: "pdf" },
+    { id: "qr-loop", source: qr.id, target: each.id, sourceHandle: "success", targetHandle: "run", data: { kind: "control" } },
+    { id: "loop-body-setter", source: each.id, target: setter.id, sourceHandle: "body", targetHandle: "run", data: { kind: "control" } },
+    { id: "input-output", source: input.id, target: output.id, sourceHandle: "pdf", targetHandle: "pdf" },
+    { id: "loop-after-output", source: each.id, target: output.id, sourceHandle: "after", targetHandle: "run", data: { kind: "control" } },
+  ];
+  const plan = compileGraph([input, qr, each, setter, output], edges);
+  assert.equal(plan.blocks.find((block) => block.nodeId === each.id)?.version, "1.1.0");
+  assert.deepEqual(plan.blocks.find((block) => block.nodeId === each.id)?.parameters.source, { source: "node", nodeId: qr.id, port: "codes" });
+  assert.deepEqual(plan.blocks.find((block) => block.nodeId === setter.id)?.parameters.value, { source: "loop", name: "item", path: ["value"] });
+});
+
 test("compiles while/repeat loop conditions and scopes iteration only inside body", () => {
   for (const type of ["loop.while", "loop.repeatUntil"]) {
     const input = node("input.pdf", 0), loop = node(type, 1), body = node("logic.if", 2), output = node("output.pdf", 3);
