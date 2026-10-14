@@ -92,6 +92,46 @@ test("round-trips schema parameter types and produces request/curl/response exam
   assert.equal(makeOutputSchema().properties.files.type, "array");
 });
 
+test("builds named array columns with types, required flags and defaults, then restores them from schema", () => {
+  const result = generateApiDefinition([], [{
+    name: "records",
+    type: "array",
+    description: "Record per la lavorazione",
+    required: true,
+    itemType: "object",
+    arrayColumns: [
+      { name: "testoQR", type: "string", required: true },
+      { name: "nomeQR", type: "string", required: true, defaultValue: "Ricevuta" },
+      { name: "priorita", type: "number", required: false, defaultValue: 2 },
+      { name: "attivo", type: "boolean", required: false, defaultValue: true },
+    ],
+  }]);
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.inputSchema.properties.records.items, {
+    type: "object",
+    properties: {
+      testoQR: { type: "string" },
+      nomeQR: { type: "string", default: "Ricevuta" },
+      priorita: { type: "number", default: 2 },
+      attivo: { type: "boolean", default: true },
+    },
+    required: ["testoQR", "nomeQR"],
+    additionalProperties: false,
+  });
+  assert.deepEqual(parametersFromSchema(result.inputSchema).find(({ name }) => name === "records")?.arrayColumns, [
+    { name: "testoQR", type: "string", required: true },
+    { name: "nomeQR", type: "string", required: true, defaultValue: "Ricevuta" },
+    { name: "priorita", type: "number", required: false, defaultValue: 2 },
+    { name: "attivo", type: "boolean", required: false, defaultValue: true },
+  ]);
+  assert.deepEqual(applySchemaDefaults([{ testoQR: "qr-1" }], result.inputSchema.properties.records), [{ testoQR: "qr-1", nomeQR: "Ricevuta", priorita: 2, attivo: true }]);
+});
+
+test("requires named columns for a manually declared API array", () => {
+  const result = generateApiDefinition([], [{ name: "righe", type: "array", description: "", required: true }]);
+  assert.ok(result.issues.some((issue) => issue.code === "ARRAY_COLUMNS_REQUIRED" && issue.parameter === "righe"));
+});
+
 test("applies declared request defaults before worker inputs are queued", () => {
   const schema = {
     type: "object",

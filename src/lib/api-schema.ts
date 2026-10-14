@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { getBlockDefinition } from "@/lib/blocks/registry";
 import { isParameterBinding, parameterBindingSchema } from "@/lib/blocks/bindings";
-import { makeSchemas, type ApiParameter, type BatchNode } from "@/lib/batch-graph";
+import { apiArrayColumnsToSchema, makeSchemas, type ApiArrayColumn, type ApiParameter, type BatchNode } from "@/lib/batch-graph";
 
-export type ApiSchemaIssue = { code: "SECRET_INPUT" | "TYPE_COLLISION" | "INVALID_NAME" | "INVALID_DEFAULT"; message: string; parameter?: string; nodeId?: string };
+export type ApiSchemaIssue = { code: "SECRET_INPUT" | "TYPE_COLLISION" | "INVALID_NAME" | "INVALID_DEFAULT" | "ARRAY_COLUMNS_REQUIRED"; message: string; parameter?: string; nodeId?: string };
 export type ApiDefinition = { parameters: ApiParameter[]; inputSchema: ReturnType<typeof makeSchemas>; issues: ApiSchemaIssue[] };
 
 type JsonSchemaProperty = {
@@ -47,6 +47,16 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
       if (current.type !== parameter.type) issues.push({ code: "TYPE_COLLISION", parameter: parameter.name, ...(nodeId ? { nodeId } : {}), message: `Il parametro '${parameter.name}' è usato con tipi incompatibili (${current.type} e ${parameter.type}).` });
       else {
         if (current.enumValues?.length && parameter.enumValues?.length && JSON.stringify(current.enumValues) !== JSON.stringify(parameter.enumValues)) issues.push({ code: "TYPE_COLLISION", parameter: parameter.name, ...(nodeId ? { nodeId } : {}), message: "Il parametro '" + parameter.name + "' ha enumerazioni incompatibili nei diversi binding." });
+        if (current.type === "array" && parameter.arrayColumns) {
+          const columns = new Map((current.arrayColumns ?? []).map((column) => [column.name, column]));
+          for (const column of parameter.arrayColumns) {
+            const existingColumn = columns.get(column.name);
+            if (existingColumn && existingColumn.type !== column.type) issues.push({ code: "TYPE_COLLISION", parameter: `${parameter.name}.${column.name}`, ...(nodeId ? { nodeId } : {}), message: `La colonna '${column.name}' dell'array '${parameter.name}' è usata con tipi incompatibili.` });
+            else if (!existingColumn) columns.set(column.name, column);
+          }
+          current.arrayColumns = [...columns.values()];
+          current.itemsSchema = apiArrayColumnsToSchema(current.arrayColumns);
+        }
         current.required ||= parameter.required;
         if (parameter.minimum !== undefined) current.minimum = Math.max(current.minimum ?? parameter.minimum, parameter.minimum);
         if (parameter.maximum !== undefined) current.maximum = Math.min(current.maximum ?? parameter.maximum, parameter.maximum);
@@ -74,7 +84,8 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
           typeof (column as { type?: unknown }).type === "string",
         ))
         : [];
-      add({ name: parameters.source.name, type: "array", description: "Elenco di record JSON usato dal ciclo", required: true, itemType: "object", minItems: 1, maxItems: typeof parameters.maxIterations === "number" ? parameters.maxIterations : 1000, itemsSchema: { type: "object", properties: Object.fromEntries(columns.map((column) => [column.name, { type: column.type }])), required: columns.map((column) => column.name), additionalProperties: false } }, node.id);
+      const arrayColumns: ApiArrayColumn[] = columns.map((column) => ({ name: column.name, type: column.type as ApiArrayColumn["type"], required: true }));
+      add({ name: parameters.source.name, type: "array", description: "Elenco di record JSON usato dal ciclo", required: true, itemType: "object", minItems: 1, maxItems: typeof parameters.maxIterations === "number" ? parameters.maxIterations : 1000, arrayColumns, itemsSchema: apiArrayColumnsToSchema(arrayColumns) }, node.id);
       parameters.source = null;
     }
     const schema = z.toJSONSchema(definition.parametersSchema, { target: "draft-7" }) as { properties?: Record<string, JsonSchemaProperty>; required?: string[] };
@@ -137,6 +148,7 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
     if (item.defaultValue !== undefined) current.defaultValue = item.defaultValue;
     if (item.enumValues?.length) current.enumValues = item.enumValues;
     if (item.itemsSchema) current.itemsSchema = item.itemsSchema;
+    if (item.arrayColumns !== undefined) current.arrayColumns = item.arrayColumns;
     if (item.minItems !== undefined) current.minItems = Math.max(current.minItems ?? item.minItems, item.minItems);
     if (item.maxItems !== undefined) current.maxItems = Math.min(current.maxItems ?? item.maxItems, item.maxItems);
     if (item.uniqueItems !== undefined) current.uniqueItems = item.uniqueItems;
@@ -148,6 +160,18 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
   merged.sort((a, b) => a.name.localeCompare(b.name));
   for (const parameter of merged) if (parameter.defaultValue !== undefined && !defaultMatchesType(parameter.defaultValue, parameter.type, parameter.enumValues)) {
     issues.push({ code: "INVALID_DEFAULT", parameter: parameter.name, message: "Il default del parametro '" + parameter.name + "' non corrisponde al tipo o all'enumerazione dichiarati." });
+  }
+  for (const parameter of merged) if (parameter.type === "array" && parameter.arrayColumns) {
+    const columnNames = new Set<string>();
+    for (const column of parameter.arrayColumns) {
+      if (!safeName.test(column.name) || blockedNames.has(column.name)) issues.push({ code: "INVALID_NAME", parameter: `${parameter.name}.${column.name}`, message: `Il nome della colonna '${column.name}' non è valido.` });
+      if (columnNames.has(column.name)) issues.push({ code: "INVALID_NAME", parameter: `${parameter.name}.${column.name}`, message: `La colonna '${column.name}' è duplicata nell'array '${parameter.name}'.` });
+      columnNames.add(column.name);
+      if (column.defaultValue !== undefined && !defaultMatchesColumnType(column.defaultValue, column.type)) issues.push({ code: "INVALID_DEFAULT", parameter: `${parameter.name}.${column.name}`, message: `Il default della colonna '${column.name}' non corrisponde al tipo ${column.type}.` });
+    }
+  }
+  for (const parameter of merged) if (parameter.type === "array" && !parameter.inferred && !parameter.arrayColumns?.length && !parameter.itemsSchema?.properties) {
+    issues.push({ code: "ARRAY_COLUMNS_REQUIRED", parameter: parameter.name, message: `Definisci almeno una colonna per l'array '${parameter.name}'.` });
   }
   return { parameters: merged, inputSchema: makeSchemas(merged), issues: dedupeIssues(issues) };
 }
@@ -171,7 +195,14 @@ export function parametersFromSchema(schema: unknown): ApiParameter[] {
       ...(property.items.required ? { required: property.items.required } : {}),
       ...(property.items.additionalProperties === undefined ? {} : { additionalProperties: property.items.additionalProperties }),
     } : undefined;
-    return [{ name, type: type as ApiParameter["type"], description: property.description ?? "", required: record.required?.includes(name) ?? false, defaultValue: property.default, enumValues: property.enum, itemType: type === "array" ? parameterType(property.items) as ApiParameter["itemType"] : undefined, itemsSchema, minItems: property.minItems, maxItems: property.maxItems, uniqueItems: property.uniqueItems, minimum: property.minimum, maximum: property.maximum, pattern: property.pattern }];
+    const arrayColumns: ApiArrayColumn[] | undefined = type === "array" && property.items?.properties
+      ? Object.entries(property.items.properties).map(([columnName, rawColumn]) => {
+        const column = rawColumn as JsonSchemaProperty;
+        const columnType = column.type === "number" || column.type === "integer" ? "number" : column.type === "boolean" ? "boolean" : column.type === "object" ? "object" : column.type === "array" ? "array" : "string";
+        return { name: columnName, type: columnType, required: property.items?.required?.includes(columnName) ?? false, ...(column.default === undefined ? {} : { defaultValue: column.default }) };
+      })
+      : undefined;
+    return [{ name, type: type as ApiParameter["type"], description: property.description ?? "", required: record.required?.includes(name) ?? false, defaultValue: property.default, enumValues: property.enum, itemType: type === "array" ? parameterType(property.items) as ApiParameter["itemType"] : undefined, itemsSchema, arrayColumns, minItems: property.minItems, maxItems: property.maxItems, uniqueItems: property.uniqueItems, minimum: property.minimum, maximum: property.maximum, pattern: property.pattern }];
   });
 }
 
@@ -272,5 +303,13 @@ function defaultMatchesType(value: unknown, type: ApiParameter["type"], enumValu
   if (type === "pdf-list") return Array.isArray(value) && value.every((item) => typeof item === "string" && z.string().uuid().safeParse(item).success);
   if (type === "array") return Array.isArray(value);
   if (type === "json") return value !== null && typeof value === "object" && !Array.isArray(value);
+  return typeof value === "string";
+}
+
+function defaultMatchesColumnType(value: unknown, type: ApiArrayColumn["type"]): boolean {
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (type === "array") return Array.isArray(value);
   return typeof value === "string";
 }

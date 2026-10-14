@@ -26,6 +26,7 @@ export type ApiParameter = {
   enumValues?: unknown[];
   itemType?: "string" | "number" | "boolean" | "object" | "array";
   itemsSchema?: Record<string, unknown>;
+  arrayColumns?: ApiArrayColumn[];
   minItems?: number;
   maxItems?: number;
   uniqueItems?: boolean;
@@ -34,6 +35,26 @@ export type ApiParameter = {
   minimum?: number;
   maximum?: number;
 };
+
+export type ApiArrayColumn = {
+  name: string;
+  type: "string" | "number" | "boolean" | "object" | "array";
+  required: boolean;
+  defaultValue?: unknown;
+};
+
+export function apiArrayColumnsToSchema(columns: ApiArrayColumn[]): Record<string, unknown> {
+  const properties = Object.fromEntries(columns.map(({ name, type, defaultValue }) => [name, {
+    type,
+    ...(defaultValue === undefined ? {} : { default: defaultValue }),
+  }]));
+  return {
+    type: "object",
+    properties,
+    required: columns.filter((column) => column.required).map((column) => column.name),
+    additionalProperties: false,
+  };
+}
 
 export function createNode(toolId: string, position: { x: number; y: number }, version?: string): BatchNode | null {
   const tool = getBlockDefinition(toolId, version);
@@ -330,7 +351,7 @@ export function makeSchemas(parameters: ApiParameter[]) {
   const properties = Object.fromEntries(parameters.map((parameter) => [parameter.name, {
     type: parameter.type === "file" || parameter.type === "pdf" ? "string" : parameter.type === "pdf-list" || parameter.type === "array" ? "array" : parameter.type === "json" ? "object" : parameter.type,
     ...(parameter.type === "file" || parameter.type === "pdf" ? { format: "uri", "x-file-reference": true, ...(parameter.type === "pdf" ? { contentMediaType: "application/pdf" } : {}) } : {}),
-    ...(parameter.type === "pdf-list" ? { items: { type: "string", format: "uri", contentMediaType: "application/pdf", "x-file-reference": true }, minItems: 1, uniqueItems: true } : parameter.type === "array" ? { items: parameter.itemsSchema ?? { type: parameter.itemType ?? "string", ...(parameter.itemType === "object" ? { additionalProperties: true } : {}) }, ...(parameter.minItems === undefined ? {} : { minItems: parameter.minItems }), ...(parameter.maxItems === undefined ? {} : { maxItems: parameter.maxItems }), ...(parameter.uniqueItems === undefined ? {} : { uniqueItems: parameter.uniqueItems }) } : {}),
+    ...(parameter.type === "pdf-list" ? { items: { type: "string", format: "uri", contentMediaType: "application/pdf", "x-file-reference": true }, minItems: 1, uniqueItems: true } : parameter.type === "array" ? { items: parameter.arrayColumns !== undefined ? apiArrayColumnsToSchema(parameter.arrayColumns) : parameter.itemsSchema ?? { type: parameter.itemType ?? "string", ...(parameter.itemType === "object" ? { additionalProperties: true } : {}) }, ...(parameter.minItems === undefined ? {} : { minItems: parameter.minItems }), ...(parameter.maxItems === undefined ? {} : { maxItems: parameter.maxItems }), ...(parameter.uniqueItems === undefined ? {} : { uniqueItems: parameter.uniqueItems }) } : {}),
     ...(parameter.type === "json" ? { additionalProperties: true } : {}),
     description: parameter.description,
     ...(parameter.defaultValue === undefined ? {} : { default: parameter.defaultValue }),

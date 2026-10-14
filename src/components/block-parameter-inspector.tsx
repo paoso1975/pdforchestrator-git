@@ -35,8 +35,8 @@ export function BlockParameterInspector({ definition, values, apiParameters, nod
   const conditionNodes = ["loop.while", "loop.repeatUntil"].includes(definition.type)
     ? [...new Map([...previousNodes, ...nodes.filter((node) => loopBranchIds(currentNodeId, "body", edges).has(node.id) && !loopBranchIds(currentNodeId, "after", edges).has(node.id))].map((node) => [node.id, node])).values()]
     : previousNodes;
-  const loopValues = getLoopValues(currentNodeId, nodes, edges);
-  const loopOptions = getLoopOptionTypes(currentNodeId, nodes, edges);
+  const loopValues = getLoopValues(currentNodeId, nodes, edges, apiParameters);
+  const loopOptions = getLoopOptionTypes(currentNodeId, nodes, edges, apiParameters);
   const context: BindingContext = { api: previewInputs, nodes: previewNodes, variables: previewVariables, loop: loopValues };
 
   return <div className="mt-3 space-y-4">
@@ -88,7 +88,16 @@ export function BlockParameterInspector({ definition, values, apiParameters, nod
           {Object.keys(loopValues).length > 0 && <option value="loop">Variabile loop</option>}{<option value="expression">Espressione dichiarativa</option>}
         </select></label>
         {mode === "static" || mode === "constant" ? <ValueEditor key={`${name}:${mode}:${JSON.stringify(mode === "constant" ? binding && binding.source === "constant" ? binding.value : property.default : raw)}`} property={editorProperty} value={mode === "constant" ? binding && binding.source === "constant" ? binding.value : property.default : raw} onChange={(value) => onChange(name, mode === "constant" ? { source: "constant", value } : value)}/> : null}
-        {mode === "api" && <select className={inputClass} value={binding?.source === "api" ? binding.name : legacyApiName(raw)} onChange={(event) => onChange(name, event.target.value ? { source: "api", name: event.target.value } : undefined)}><option value="">Seleziona parametro API</option>{apiOptions.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.type}{item.defaultValue === undefined ? "" : ` · default ${shortValue(item.defaultValue)}`}</option>)}</select>}
+        {mode === "api" && <select className={inputClass} value={binding?.source === "api" ? binding.name : legacyApiName(raw)} onChange={(event) => {
+          const parameterName = event.target.value;
+          onChange(name, parameterName ? { source: "api", name: parameterName } : undefined);
+          if (definition.type === "loop.forEach" && name === "source") {
+            const selectedParameter = apiParameters.find((item) => item.name === parameterName);
+            const columns = selectedParameter?.arrayColumns?.map(({ name: columnName, type: columnType }) => ({ name: columnName, type: columnType })) ?? [];
+            onChange("itemType", selectedParameter?.itemType ?? (columns.length ? "object" : "string"));
+            onChange("columns", columns);
+          }
+        }}><option value="">Seleziona parametro API</option>{apiOptions.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.type}{item.defaultValue === undefined ? "" : ` · default ${shortValue(item.defaultValue)}`}</option>)}</select>}
         {mode === "node" && <select className={inputClass} value={binding?.source === "node" ? `${binding.nodeId}:${binding.port}` : ""} onChange={(event) => { const [nodeId, port] = event.target.value.split(":"); onChange(name, nodeId && port ? { source: "node", nodeId, port } : undefined); }}><option value="">Seleziona output precedente</option>{nodeOptions.map(({ node, port }) => <option key={`${node.id}:${port.id}`} value={`${node.id}:${port.id}`}>{node.data.label} · {port.label} ({port.type})</option>)}</select>}
         {mode === "variable" && <select className={inputClass} value={binding?.source === "variable" ? `${binding.scope === "loop" ? "loop" : "workflow"}:${binding.name}` : ""} onChange={(event) => { const [scope, variableName] = event.target.value.split(":"); onChange(name, variableName ? { source: "variable", scope: scope as "workflow" | "loop", name: variableName } : undefined); }}><option value="">Seleziona variabile</option>{variableOptions.map((item) => <option key={`workflow:${item.name}`} value={`workflow:${item.name}`}>{item.name} · workflow ({item.type})</option>)}{loopVariableOptions.map((item) => <option key={`loop:${item.name}`} value={`loop:${item.name}`}>{item.name} · loop ({item.type})</option>)}</select>}
         {mode === "loop" && <select className={inputClass} value={binding?.source === "loop" ? binding.name === "item" && binding.path?.length ? `item.${binding.path.join(".")}` : binding.name : ""} onChange={(event) => { const selected = event.target.value; const itemPath = selected.startsWith("item.") ? selected.slice(5).split(".") : []; onChange(name, selected ? { source: "loop", name: itemPath.length ? "item" : selected, ...(itemPath.length ? { path: itemPath } : {}) } : undefined); }}><option value="">Seleziona variabile loop</option>{loopOptions.filter(([, type]) => isCompatibleParameterType(expected, type as Parameters<typeof isCompatibleParameterType>[1])).map(([item]) => <option key={item} value={item}>{item}</option>)}</select>}
@@ -114,7 +123,7 @@ function loopBranchIds(loopId: string, handle: string, edges: BatchEdge[]) {
   return seen;
 }
 
-function getLoopOptionTypes(nodeId: string, nodes: BatchNode[], edges: BatchEdge[]): Array<[string, string]> {
+function getLoopOptionTypes(nodeId: string, nodes: BatchNode[], edges: BatchEdge[], apiParameters: ApiParameter[]): Array<[string, string]> {
   const options = new Map<string, string>();
   for (const loop of nodes.filter((node) => ["loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil"].includes(node.data.toolId))) {
     const body = loopBranchIds(loop.id, "body", edges); const after = loopBranchIds(loop.id, "after", edges);
@@ -124,7 +133,14 @@ function getLoopOptionTypes(nodeId: string, nodes: BatchNode[], edges: BatchEdge
     } else if (loop.data.toolId === "loop.forEach") {
       const itemType = String(loop.data.parameters.itemType ?? "object"); options.set("item", itemType);
       options.set("index", "number");
-      if (itemType === "object" && Array.isArray(loop.data.parameters.columns)) for (const column of loop.data.parameters.columns) {
+      const configuredColumns = Array.isArray(loop.data.parameters.columns) ? loop.data.parameters.columns : [];
+      const source = loop.data.parameters.source;
+      const apiName = source && typeof source === "object" && "source" in source && source.source === "api" && "name" in source && typeof source.name === "string"
+        ? source.name
+        : source && typeof source === "object" && "$param" in source && typeof source.$param === "string" ? source.$param : null;
+      const apiColumns = apiParameters.find((parameter) => parameter.name === apiName)?.arrayColumns ?? [];
+      const columns = configuredColumns.length ? configuredColumns : apiColumns;
+      if (itemType === "object") for (const column of columns) {
         if (column && typeof column === "object" && typeof column.name === "string" && typeof column.type === "string") options.set(`item.${column.name}`, column.type);
       }
     } else options.set("iteration", "number");
@@ -132,9 +148,9 @@ function getLoopOptionTypes(nodeId: string, nodes: BatchNode[], edges: BatchEdge
   return [...options.entries()];
 }
 
-function getLoopValues(nodeId: string, nodes: BatchNode[], edges: BatchEdge[]): Record<string, unknown> {
+function getLoopValues(nodeId: string, nodes: BatchNode[], edges: BatchEdge[], apiParameters: ApiParameter[]): Record<string, unknown> {
   const values: Record<string, unknown> = {};
-  for (const [name, type] of getLoopOptionTypes(nodeId, nodes, edges)) {
+  for (const [name, type] of getLoopOptionTypes(nodeId, nodes, edges, apiParameters)) {
     if (name.startsWith("item.")) continue;
     if (name === "item") values.item = type === "object" ? {} : type === "array" ? [] : type === "number" ? 1 : type === "boolean" ? true : "valore";
     else values[name] = name === "pageId" ? "page-id" : type === "number" ? 1 : "valore";
