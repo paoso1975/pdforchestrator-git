@@ -85,6 +85,37 @@ export function buildDashboardExecutionRequestPreview(batchId: string, requestBo
   ].join("\n");
 }
 
+export function buildPublicBatchRunCurlPreview(batchSlug: string, requestBody: { input: Record<string, unknown> }, idempotencyKey = "<UUID generato prima dell’invio>", apiBaseUrl = "https://api.pdforchestrator.com"): string {
+  const baseUrl = apiBaseUrl.replace(/\/+$/, "");
+  const path = `/api/public/v1/batches/${encodeURIComponent(batchSlug)}/runs`;
+  const body = JSON.stringify(requestBody);
+  const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  const continuation = "\\";
+  return [
+    "# Esporta PFO_KEY_ID e PFO_SECRET nell'ambiente. Non inserirli nel body o nel repository.",
+    ': "${PFO_KEY_ID:?Imposta PFO_KEY_ID con la Access Key ID}"',
+    ': "${PFO_SECRET:?Imposta PFO_SECRET con il Secret della credenziale}"',
+    `PFO_API_URL=${shellQuote(baseUrl)}`,
+    `PFO_PATH=${shellQuote(path)}`,
+    `PFO_BODY=${shellQuote(body)}`,
+    `PFO_IDEMPOTENCY_KEY=${shellQuote(idempotencyKey)}`,
+    "PFO_TIMESTAMP=$(date +%s)",
+    "PFO_NONCE=$(openssl rand -hex 16)",
+    "PFO_BODY_SHA256=$(printf '%s' \"$PFO_BODY\" | openssl dgst -sha256 | awk '{print $NF}')",
+    "PFO_CANONICAL=$(printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s' 'POST' \"$PFO_PATH\" '' \"$PFO_TIMESTAMP\" \"$PFO_NONCE\" \"$PFO_BODY_SHA256\")",
+    "PFO_SIGNATURE=$(printf '%s' \"$PFO_CANONICAL\" | openssl dgst -sha256 -hmac \"$PFO_SECRET\" | awk '{print $NF}')",
+    "curl --fail-with-body --request POST \"$PFO_API_URL$PFO_PATH\" \\",
+    `  --header "Content-Type: application/json" ${continuation}`,
+    `  --header "X-PFO-Key: $PFO_KEY_ID" ${continuation}`,
+    `  --header "X-PFO-Timestamp: $PFO_TIMESTAMP" ${continuation}`,
+    `  --header "X-PFO-Nonce: $PFO_NONCE" ${continuation}`,
+    `  --header "X-PFO-Content-SHA256: $PFO_BODY_SHA256" ${continuation}`,
+    `  --header "X-PFO-Signature: $PFO_SIGNATURE" ${continuation}`,
+    `  --header "Idempotency-Key: $PFO_IDEMPOTENCY_KEY" ${continuation}`,
+    '  --data-binary "$PFO_BODY"',
+  ].join("\n");
+}
+
 export function missingRequiredRunInputs(fields: RunInputField[], values: Record<string, unknown>): string[] {
   return fields.filter((field) => {
     if (!field.required) return false;

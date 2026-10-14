@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CheckCircle2, CircleAlert, Copy, Download, File, LoaderCircle, Play, UploadCloud } from "lucide-react";
-import { buildBatchRunRequest, buildDashboardExecutionRequestPreview, getBatchRunFields, missingRequiredRunInputs, type RunInputField } from "@/lib/batch-run-input";
+import { buildBatchRunRequest, buildDashboardExecutionRequestPreview, buildPublicBatchRunCurlPreview, getBatchRunFields, missingRequiredRunInputs, type RunInputField } from "@/lib/batch-run-input";
 import { buildExecutionLog, executionLogPlainText, type ExecutionLogEvent, type ExecutionLogStep } from "@/lib/execution-log";
 
 export type RunnableBatch = {
@@ -97,6 +97,12 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
 
   const requestBody = useMemo(() => buildBatchRunRequest(fields, values), [fields, values]);
   const requestPreview = useMemo(() => batch ? buildDashboardExecutionRequestPreview(batch.id, requestBody, idempotencyKey || "<UUID generato prima dell’invio>") : "", [batch, requestBody, idempotencyKey]);
+  const publicCurlPreview = useMemo(() => batch ? buildPublicBatchRunCurlPreview(
+    batch.slug,
+    requestBody,
+    idempotencyKey || "<UUID generato prima dell’invio>",
+    process.env.NEXT_PUBLIC_API_URL || "https://api.pdforchestrator.com",
+  ) : "", [batch, requestBody, idempotencyKey]);
   const missing = useMemo(() => missingRequiredRunInputs(fields, values), [fields, values]);
   const activeRunId = run?.id ?? null;
   const runStatus = run?.status ?? null;
@@ -293,9 +299,12 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
     <div className="grid items-start gap-4 xl:grid-cols-[minmax(260px,0.95fr)_minmax(330px,1.2fr)_minmax(260px,0.95fr)]">
       <section className="min-w-0 rounded-xl border border-[#293744] bg-[#101923] p-4 sm:p-5">
         <div className="flex items-center justify-between"><div><p className="text-[10px] uppercase tracking-[.16em] text-[#2E7BFA]">1 · Request</p><h2 className="mt-1 text-sm font-semibold">JSON di esecuzione</h2></div><span className="rounded border border-[#2b3b47] px-2 py-1 text-[10px] text-slate-500">v{batch?.version}</span></div>
-        <p className="mt-2 text-[11px] leading-5 text-slate-500">Body inviato all’endpoint dashboard. I PDF sono riferiti tramite file ID di Cubbit.</p>
+        <p className="mt-2 text-[11px] leading-5 text-slate-500">Body JSON della chiamata: usa i nomi pubblici definiti nello schema del batch. I PDF sono riferiti tramite ID StoredFile.</p>
         <pre className="mt-4 max-h-[480px] min-h-44 overflow-auto rounded-lg border border-[#202d38] bg-[#0b141d] p-3 text-[10px] leading-5 text-[#c3cddc]">{JSON.stringify(requestBody, null, 2)}</pre>
-        <p className="mt-3 break-all font-mono text-[10px] text-slate-600">POST /api/batches/{batch?.id}/executions</p>
+        <h3 className="mt-5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">cURL API pubblica · HMAC-SHA256</h3>
+        <p className="mt-1 text-[9px] leading-4 text-slate-600">Include URL, batch, body, timestamp, nonce, hash, firma e chiave di idempotenza richiesti in produzione. Imposta PFO_KEY_ID e PFO_SECRET nell’ambiente della shell prima di eseguirlo.</p>
+        <pre aria-label="Comando cURL completo per l’API pubblica" className="mt-2 max-h-[420px] overflow-auto whitespace-pre-wrap break-all rounded-lg border border-[#202d38] bg-[#0b141d] p-3 font-mono text-[9px] leading-4 text-[#c3cddc]">{publicCurlPreview}</pre>
+        <p className="mt-3 break-all font-mono text-[10px] text-slate-600">Endpoint dashboard: POST /api/batches/{batch?.id}/executions</p>
         {missing.length > 0 && <p className="mt-3 text-[10px] text-amber-300">Richiesti: {missing.join(", ")}</p>}
       </section>
 
@@ -332,7 +341,7 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
           {run.status === "FAILED" && <pre className="mt-4 max-h-32 overflow-auto rounded-lg border border-red-900/40 bg-red-950/20 p-3 text-[10px] text-red-200">{JSON.stringify(run.error ?? { message: "Il worker ha segnalato un errore." }, null, 2)}</pre>}
           {outputs.length > 0 ? <div className="mt-4 space-y-2">{outputs.map((file) => <article key={file.id} className="flex items-center gap-3 rounded-lg border border-[#293744] bg-[#0d1720] p-3"><File size={16} className="shrink-0 text-[#93bcff]"/><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{file.filename}</p><p className="mt-1 text-[10px] text-slate-500">{file.mimeType} · {formatBytes(Number(file.sizeBytes))}</p></div><a href={file.downloadUrl} download={file.filename} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#36455b] px-2.5 py-2 text-[10px] text-[#8dafe2] hover:bg-[#131f30]"><Download size={13}/>Scarica</a></article>)}</div> : ["COMPLETED", "SUCCEEDED"].includes(run.status) ? <p className="mt-4 flex items-center gap-2 text-xs text-amber-200"><CheckCircle2 size={15}/>Esecuzione completata senza artifact PDF registrati.</p> : null}
           {run.output !== undefined && <><h3 className="mt-5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dati output</h3><pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-[#0b141d] p-3 text-[10px] leading-5 text-slate-300">{JSON.stringify(run.output, null, 2)}</pre></>}
-        </div> : <div className="mt-5 rounded-lg border border-dashed border-[#34434f] p-4"><p className="text-xs text-slate-400">Il risultato comparirà qui dopo l’avvio.</p><h3 className="mt-5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Schema output</h3><pre className="mt-2 max-h-64 overflow-auto text-[10px] leading-5 text-slate-500">{JSON.stringify(batch?.outputSchema ?? {}, null, 2)}</pre></div>}
+        </div> : null}
       </section>
     </div>
   </>;

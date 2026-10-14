@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBatchRunRequest, buildDashboardExecutionRequestPreview, getBatchRunFields, missingRequiredRunInputs } from "./batch-run-input";
+import { buildBatchRunRequest, buildDashboardExecutionRequestPreview, buildPublicBatchRunCurlPreview, getBatchRunFields, missingRequiredRunInputs } from "./batch-run-input";
 
 test("identifies single and ordered PDF list inputs from the published JSON schema", () => {
   const fields = getBatchRunFields({
@@ -49,4 +49,22 @@ test("dashboard request uses the StoredFile ID returned by the available-files A
   const fields = getBatchRunFields({ type: "object", properties: { documento: { type: "string", contentMediaType: "application/pdf" } }, required: ["documento"] });
   const body = buildBatchRunRequest(fields, { documento: storedFile.id });
   assert.deepEqual(body, { input: { documento: storedFile.id } });
+});
+
+test("public cURL preview signs the exact production request and preserves renamed array fields", () => {
+  const request = { input: { documentoIngresso: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", elencoQR: [{ testoQR: "abc", nomeQR: "Documento" }] } };
+  const curl = buildPublicBatchRunCurlPreview("batch-prova", request, "run-key-123", "https://api.example.test/");
+  assert.match(curl, /PFO_API_URL='https:\/\/api\.example\.test'/);
+  assert.match(curl, /PFO_PATH='\/api\/public\/v1\/batches\/batch-prova\/runs'/);
+  assert.match(curl, /"documentoIngresso":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"/);
+  assert.match(curl, /"elencoQR":\[\{\"testoQR\":\"abc\",\"nomeQR\":\"Documento\"\}\]/);
+  for (const header of ["X-PFO-Key", "X-PFO-Timestamp", "X-PFO-Nonce", "X-PFO-Content-SHA256", "X-PFO-Signature", "Idempotency-Key"]) {
+    assert.match(curl, new RegExp(`--header \\"${header}:`));
+  }
+  assert.match(curl, /PFO_BODY_SHA256=.*openssl dgst -sha256/);
+  assert.match(curl, /PFO_CANONICAL=.*POST.*PFO_PATH.*PFO_TIMESTAMP.*PFO_NONCE.*PFO_BODY_SHA256/);
+  assert.ok(curl.includes('openssl dgst -sha256 -hmac "$PFO_SECRET"'));
+  assert.match(curl, /PFO_KEY_ID/);
+  assert.match(curl, /PFO_SECRET/);
+  assert.doesNotMatch(curl, /"secret"\s*:/i);
 });
