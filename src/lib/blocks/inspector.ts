@@ -28,6 +28,12 @@ export function isCompatibleParameterType(schemaType: string | undefined, source
   return schemaType === sourceType;
 }
 
+/** TIFF rasterization accepts an API number binding; integer-ness is enforced by its published schema and runtime. */
+export function isApiParameterCompatible(blockType: string, parameterName: string, schemaType: string | undefined, sourceType: InspectorOption["valueType"]): boolean {
+  if (blockType === "pdf.convert.tiff" && parameterName === "dpi" && schemaType === "integer") return sourceType === "number";
+  return isCompatibleParameterType(schemaType, sourceType);
+}
+
 export function getParameterIssues(definition: BlockDefinition, values: Record<string, unknown>): Record<string, string> {
   const issues: Record<string, string> = {};
   for (const name of definition.requiredParameters) {

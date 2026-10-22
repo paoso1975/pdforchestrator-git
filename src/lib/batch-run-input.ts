@@ -4,6 +4,7 @@ export type RunInputField = {
   description: string;
   required: boolean;
   kind: "pdf" | "pdf-list" | "string" | "number" | "boolean" | "json";
+  integer?: boolean;
   defaultValue?: unknown;
   enumValues?: unknown[];
   minimum?: number;
@@ -53,6 +54,7 @@ export function getBatchRunFields(inputSchema: unknown): RunInputField[] {
       description: property.description ?? "",
       required: schema.required?.includes(name) ?? false,
       kind,
+      ...(property.type === "integer" ? { integer: true } : {}),
       ...(property.default === undefined ? {} : { defaultValue: property.default }),
       ...(property.enum === undefined ? {} : { enumValues: property.enum }),
       ...(property.minimum === undefined ? {} : { minimum: property.minimum }),

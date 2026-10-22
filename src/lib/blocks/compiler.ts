@@ -112,6 +112,7 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
       if (!parsed.success) throw new BlockCompileError([`${label}: binding non valido (${parsed.error.issues[0]?.message ?? "forma non riconosciuta"}).`]);
       const binding = parsed.data;
       if (binding.source === "api" && options.apiParameters && !options.apiParameters.includes(binding.name)) throw new BlockCompileError([`${label}: parametro API '${binding.name}' non definito.`]);
+      if (binding.source === "api" && byId.get(nodeId)?.data.toolId === "pdf.convert.tiff" && label.endsWith(".dpi") && options.apiParameterTypes?.[binding.name] !== "number") throw new BlockCompileError([`${label}: il parametro API '${binding.name}' deve essere di tipo numerico intero.`]);
       if (binding.source === "node") {
         const source = byId.get(binding.nodeId); const definition = source && getBlockDefinition(source.data.toolId, source.data.toolVersion);
         if ((!ancestors.get(nodeId)?.has(binding.nodeId) && !conditionalLoopBodyNodes.get(nodeId)?.has(binding.nodeId)) || !definition?.outputs.some((port) => port.id === binding.port && port.type !== "control")) throw new BlockCompileError([`${label}: l'output selezionato non è disponibile nello scope del nodo.`]);

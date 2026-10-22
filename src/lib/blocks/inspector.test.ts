@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createNode } from "@/lib/batch-graph";
-import { getParameterIssues, getPreviousNodes, isCompatibleParameterType } from "@/lib/blocks/inspector";
+import { getParameterIssues, getPreviousNodes, isApiParameterCompatible, isCompatibleParameterType } from "@/lib/blocks/inspector";
 import { getBlockDefinition } from "@/lib/blocks/registry";
 
 function node(type: string, x: number) { const result = createNode(type, { x, y: 0 }); assert.ok(result); return result; }
@@ -21,6 +21,13 @@ test("picker filters bindings by parameter type and validates required values in
   const merge = getBlockDefinition("pdf.merge", "1.1.0"); assert.ok(merge);
   assert.match(getParameterIssues(merge, {}).mergePlan, /obbligatorio|Invalid input/i);
   assert.deepEqual(getParameterIssues(merge, { mergePlan: { files: [{ filename: "a.pdf", position: 1 }] } }), {});
+});
+
+test("TIFF dpi picker accepts numeric API parameters only for the dpi field", () => {
+  assert.equal(isApiParameterCompatible("pdf.convert.tiff", "dpi", "integer", "number"), true);
+  assert.equal(isApiParameterCompatible("pdf.convert.tiff", "dpi", "integer", "string"), false);
+  assert.equal(isApiParameterCompatible("pdf.rotate", "degrees", "number", "number"), true);
+  assert.equal(isApiParameterCompatible("pdf.rotate", "degrees", "number", "string"), false);
 });
 
 test("condition group inspector reports an unset or over-complex AST inline", () => {

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { isParameterBinding, resolveParameterBindings, type BindingContext } from "@/lib/blocks/bindings";
-import { getPreviousNodes, getParameterIssues, isCompatibleParameterType } from "@/lib/blocks/inspector";
+import { getPreviousNodes, getParameterIssues, isApiParameterCompatible, isCompatibleParameterType } from "@/lib/blocks/inspector";
 import type { ApiParameter, BatchEdge, BatchNode, BatchVariable } from "@/lib/batch-graph";
 import { getBlockDefinition, type BlockDefinition } from "@/lib/blocks/registry";
 import { ConditionGroupBuilder } from "@/components/condition-group-builder";
@@ -64,7 +64,7 @@ export function BlockParameterInspector({ definition, values, apiParameters, nod
       const editorProperty = definition.type === "logic.if" && (name === "left" || name === "right")
         ? { ...property, type: "object" }
         : property;
-      const apiOptions = apiParameters.filter((item) => !(name === "parameter" && definition.category === "input") && isCompatibleParameterType(expected, item.type));
+      const apiOptions = apiParameters.filter((item) => !(name === "parameter" && definition.category === "input") && isApiParameterCompatible(definition.type, name, expected, item.type));
       const variableOptions = variables.filter((item) => isCompatibleParameterType(expected, item.type));
       const loopVariableOptions = getPreviousNodes(currentNodeId, nodes, edges).flatMap((item) => {
         const source = nodes.find((candidate) => candidate.id === item.id);

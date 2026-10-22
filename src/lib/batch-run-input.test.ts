@@ -18,6 +18,14 @@ test("identifies single and ordered PDF list inputs from the published JSON sche
   assert.equal(fields[1].maxItems, 5);
 });
 
+test("keeps integer API fields bounded and marks them as integer in the run form", () => {
+  const [field] = getBatchRunFields({ type: "object", properties: { dpi: { type: "integer", minimum: 72, maximum: 1200 } }, required: ["dpi"] });
+  assert.equal(field.kind, "number");
+  assert.equal(field.integer, true);
+  assert.equal(field.minimum, 72);
+  assert.equal(field.maximum, 1200);
+});
+
 test("keeps published defaults, validates required empties, and builds API input with ordered file IDs", () => {
   const fields = getBatchRunFields({
     type: "object",

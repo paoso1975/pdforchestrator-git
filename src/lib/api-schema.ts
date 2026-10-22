@@ -98,7 +98,8 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
         const effective = declared ? declaredSchemaType(declared) : expected;
         const apiType = parameterType(effective);
         const apiSuppliedFilename = toolId === "pdf.output" && path.length === 1 && path[0] === "filenameTemplate";
-        const defaultValue = apiSuppliedFilename ? undefined : effective?.default ?? (path.length === 1 ? definition.defaults[path[0]] : undefined);
+        const integer = toolId === "pdf.convert.tiff" && path.length === 1 && path[0] === "dpi" && effective?.type === "integer";
+        const defaultValue = apiSuppliedFilename || integer ? undefined : effective?.default ?? (path.length === 1 ? definition.defaults[path[0]] : undefined);
         const topLevelRequired = path[0] ? schema?.required?.includes(path[0]) ?? true : true;
         const itemSchema = effective?.items ? {
           type: effective.items.type,
@@ -106,7 +107,7 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
           ...(effective.items.required ? { required: effective.items.required } : {}),
           ...(effective.items.additionalProperties === undefined ? {} : { additionalProperties: effective.items.additionalProperties }),
         } : undefined;
-        add({ name: binding.name, type: apiType, description: effective?.description ?? descriptionFor(binding.name, path), required: defaultValue === undefined && topLevelRequired, defaultValue, enumValues: effective?.enum, itemType: apiType === "array" ? parameterType(effective?.items) as ApiParameter["itemType"] : undefined, itemsSchema: itemSchema, minItems: effective?.minItems, maxItems: effective?.maxItems, uniqueItems: effective?.uniqueItems, minimum: effective?.minimum, maximum: effective?.maximum, pattern: effective?.pattern }, node.id);
+        add({ name: binding.name, type: apiType, description: effective?.description ?? descriptionFor(binding.name, path), required: defaultValue === undefined && topLevelRequired, defaultValue, enumValues: effective?.enum, itemType: apiType === "array" ? parameterType(effective?.items) as ApiParameter["itemType"] : undefined, itemsSchema: itemSchema, minItems: effective?.minItems, maxItems: effective?.maxItems, uniqueItems: effective?.uniqueItems, minimum: effective?.minimum, maximum: effective?.maximum, pattern: effective?.pattern, ...(integer ? { integer: true } : {}) }, node.id);
         return;
       }
       if (Array.isArray(value)) {
@@ -163,6 +164,7 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
     current.required ||= item.required;
     if (item.description) current.description = item.description;
     if (item.defaultValue !== undefined) current.defaultValue = item.defaultValue;
+    if (item.integer) current.integer = true;
     if (item.enumValues?.length) current.enumValues = item.enumValues;
     if (item.itemsSchema) current.itemsSchema = item.itemsSchema;
     if (item.arrayColumns !== undefined) current.arrayColumns = item.arrayColumns;
@@ -219,7 +221,7 @@ export function parametersFromSchema(schema: unknown): ApiParameter[] {
         return { name: columnName, type: columnType, required: property.items?.required?.includes(columnName) ?? false, ...(column.default === undefined ? {} : { defaultValue: column.default }) };
       })
       : undefined;
-    return [{ name, type: type as ApiParameter["type"], description: property.description ?? "", required: record.required?.includes(name) ?? false, defaultValue: property.default, enumValues: property.enum, itemType: type === "array" ? parameterType(property.items) as ApiParameter["itemType"] : undefined, itemsSchema, arrayColumns, sourceName: property["x-source-parameter"], minItems: property.minItems, maxItems: property.maxItems, uniqueItems: property.uniqueItems, minimum: property.minimum, maximum: property.maximum, pattern: property.pattern }];
+    return [{ name, type: type as ApiParameter["type"], description: property.description ?? "", required: record.required?.includes(name) ?? false, defaultValue: property.default, enumValues: property.enum, itemType: type === "array" ? parameterType(property.items) as ApiParameter["itemType"] : undefined, itemsSchema, arrayColumns, sourceName: property["x-source-parameter"], minItems: property.minItems, maxItems: property.maxItems, uniqueItems: property.uniqueItems, minimum: property.minimum, maximum: property.maximum, pattern: property.pattern, ...(property.type === "integer" ? { integer: true } : {}) }];
   });
 }
 
@@ -327,7 +329,8 @@ function declaredSchemaType(type: string): JsonSchemaProperty | undefined {
 function parameterType(property?: JsonSchemaProperty): ApiParameter["type"] {
   if (property?.contentMediaType === "application/pdf") return "pdf";
   if (property?.type === "array" && property.items?.contentMediaType === "application/pdf") return "pdf-list";
-  if (property?.type === "number" || property?.type === "boolean" || property?.type === "array") return property.type;
+  if (property?.type === "number" || property?.type === "integer") return "number";
+  if (property?.type === "boolean" || property?.type === "array") return property.type;
   if (property?.type === "object") return "json";
   return "string";
 }

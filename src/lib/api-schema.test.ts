@@ -30,6 +30,19 @@ test("infers required PDF uploads and typed API bindings with defaults and enum 
   assert.deepEqual((result.inputSchema.properties.documenti as { items?: unknown }).items, { type: "string", format: "uri", contentMediaType: "application/pdf", "x-file-reference": true });
 });
 
+test("publishes TIFF dpi API binding as a required bounded integer and restores its constraint", () => {
+  const input = node("input.pdf", 0), convert = node("pdf.convert.tiff", 1);
+  input.data.parameters.parameter = "documento";
+  convert.data.parameters.dpi = { source: "api", name: "risoluzione" };
+  const definition = generateApiDefinition([input, convert]);
+  assert.deepEqual(definition.issues, []);
+  assert.equal(definition.inputSchema.properties.risoluzione.type, "integer");
+  assert.equal(definition.inputSchema.properties.risoluzione.minimum, 72);
+  assert.equal(definition.inputSchema.properties.risoluzione.maximum, 1200);
+  assert.equal(definition.inputSchema.required.includes("risoluzione"), true);
+  assert.equal(parametersFromSchema(definition.inputSchema).find(({ name }) => name === "risoluzione")?.integer, true);
+});
+
 test("infers an API array of typed records for a forEach source", () => {
   const each = node("loop.forEach", 0);
   each.data.parameters = {

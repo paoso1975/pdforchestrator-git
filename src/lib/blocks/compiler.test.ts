@@ -70,6 +70,26 @@ test("compiles single-page and multipage TIFF artifact outputs", () => {
   assert.equal(plan.blocks.find((block) => block.nodeId === multipage.id)?.handlerId, "output.tiff.multipage");
 });
 
+test("compiles TIFF conversion with a numeric API dpi and rejects a non-numeric API field", () => {
+  const input = node("input.pdf", 0), convert = node("pdf.convert.tiff", 1), output = node("output.tiff.multipage", 2);
+  input.data.parameters.parameter = "documento";
+  convert.data.parameters.dpi = { source: "api", name: "risoluzione" };
+  const edges: BatchEdge[] = [
+    { id: "input-convert", source: input.id, target: convert.id, sourceHandle: "pdf", targetHandle: "pdf" },
+    { id: "convert-output", source: convert.id, target: output.id, sourceHandle: "multipage", targetHandle: "tiff" },
+  ];
+  const api = generateApiDefinition([input, convert, output]);
+  assert.deepEqual(api.issues, []);
+  const plan = compileGraph([input, convert, output], edges, {
+    apiParameters: api.parameters.map((parameter) => parameter.name),
+    apiParameterTypes: Object.fromEntries(api.parameters.map((parameter) => [parameter.name, parameter.type])),
+  });
+  assert.deepEqual(plan.blocks.find((block) => block.handlerId === "pdf.convert.tiff")?.parameters.dpi, { source: "api", name: "risoluzione" });
+  assert.throws(() => compileGraph([input, convert, output], edges, {
+    apiParameters: ["documento", "risoluzione"], apiParameterTypes: { documento: "string", risoluzione: "string" },
+  }), /deve essere di tipo numerico intero/);
+});
+
 test("compiled plan order, edge list and hashes are stable for independent nodes", () => {
   const input = node("input.pdf", 0), condition = node("logic.if", 1), output = node("output.pdf", 2);
   condition.data.parameters = { leftType: "number", rightType: "number", left: 1, right: 2, operator: "lt", caseSensitive: false, nullBehavior: "equalOnly" };

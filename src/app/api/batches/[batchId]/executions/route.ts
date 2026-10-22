@@ -25,7 +25,7 @@ function validateJsonSchema(value: unknown, schema: unknown): string[] {
     if (s.additionalProperties === false) for (const key of Object.keys(record)) if (!(key in (s.properties ?? {}))) errors.push(`Parametro sconosciuto: ${key}.`);
     for (const [key, val] of Object.entries(record)) {
       const field = s.properties?.[key]; if (!field) continue;
-      if (field.type === "number" && (typeof val !== "number" || !Number.isFinite(val) || (field.minimum !== undefined && val < field.minimum) || (field.maximum !== undefined && val > field.maximum))) errors.push(`Valore non valido per ${key}.`);
+      if ((field.type === "number" || field.type === "integer") && (typeof val !== "number" || !Number.isFinite(val) || (field.type === "integer" && !Number.isInteger(val)) || (field.minimum !== undefined && val < field.minimum) || (field.maximum !== undefined && val > field.maximum))) errors.push(field.type === "integer" ? `Il parametro ${key} deve essere un numero intero compreso nei limiti.` : `Valore non valido per ${key}.`);
       if (field.type === "boolean" && typeof val !== "boolean") errors.push(`Valore non valido per ${key}.`);
       if (field.type === "string") {
         if (typeof val !== "string" || (field.minLength !== undefined && val.length < field.minLength) || (field.maxLength !== undefined && val.length > field.maxLength) || (field.enum && !field.enum.includes(val))) errors.push(`Valore non valido per ${key}.`);

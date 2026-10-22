@@ -36,6 +36,8 @@ export type ApiParameter = {
   inferred?: boolean;
   minimum?: number;
   maximum?: number;
+  /** Keep JSON Schema's integer constraint while exposing a numeric API parameter. */
+  integer?: boolean;
 };
 
 export type ApiArrayColumn = {
@@ -357,7 +359,7 @@ function isAcyclic(nodes: BatchNode[], edges: BatchEdge[]) {
 
 export function makeSchemas(parameters: ApiParameter[]) {
   const properties = Object.fromEntries(parameters.map((parameter) => [parameter.name, {
-    type: parameter.type === "file" || parameter.type === "pdf" ? "string" : parameter.type === "pdf-list" || parameter.type === "array" ? "array" : parameter.type === "json" ? "object" : parameter.type,
+    type: parameter.type === "file" || parameter.type === "pdf" ? "string" : parameter.type === "pdf-list" || parameter.type === "array" ? "array" : parameter.type === "json" ? "object" : parameter.type === "number" && parameter.integer ? "integer" : parameter.type,
     ...(parameter.type === "file" || parameter.type === "pdf" ? { format: "uri", "x-file-reference": true, ...(parameter.type === "pdf" ? { contentMediaType: "application/pdf" } : {}) } : {}),
     ...(parameter.type === "pdf-list" ? { items: { type: "string", format: "uri", contentMediaType: "application/pdf", "x-file-reference": true }, minItems: 1, uniqueItems: true } : parameter.type === "array" ? { items: parameter.arrayColumns !== undefined ? apiArrayColumnsToSchema(parameter.arrayColumns) : parameter.itemsSchema ?? { type: parameter.itemType ?? "string", ...(parameter.itemType === "object" ? { additionalProperties: true } : {}) }, ...(parameter.minItems === undefined ? {} : { minItems: parameter.minItems }), ...(parameter.maxItems === undefined ? {} : { maxItems: parameter.maxItems }), ...(parameter.uniqueItems === undefined ? {} : { uniqueItems: parameter.uniqueItems }) } : {}),
     ...(parameter.type === "json" ? { additionalProperties: true } : {}),
