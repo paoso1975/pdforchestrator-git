@@ -93,12 +93,14 @@ test("compiles TIFF conversion with a numeric API dpi and rejects a non-numeric 
 test("compiles API filename and integer index bindings for the multipage TIFF block", () => {
   const input = node("input.pdf", 0), convert = node("pdf.convert.tiff.pages", 1), multipage = node("output.tiff.createMultipage", 2);
   input.data.parameters.parameter = "documento";
+  convert.data.parameters = { colorMode: { source: "api", name: "colorePagine" } };
   multipage.data.parameters = {
     filename: { source: "api", name: "nomeTiff" },
     fromIndex: { source: "api", name: "daIndex" },
     toIndex: { source: "api", name: "aIndex" },
     compression: { source: "api", name: "compressionTiff" },
     quality: { source: "api", name: "qualitaTiff" },
+    colorMode: { source: "api", name: "coloreFinale" },
   };
   const edges: BatchEdge[] = [
     { id: "input-convert", source: input.id, target: convert.id, sourceHandle: "pdf", targetHandle: "pdf" },
@@ -106,6 +108,8 @@ test("compiles API filename and integer index bindings for the multipage TIFF bl
   ];
   const api = generateApiDefinition([input, convert, multipage]);
   assert.deepEqual(api.issues, []);
+  assert.deepEqual(api.parameters.find((parameter) => parameter.name === "colorePagine")?.enumValues, ["RGB", "YCbCr", "grayscale", "CMYK"]);
+  assert.deepEqual(api.parameters.find((parameter) => parameter.name === "coloreFinale")?.enumValues, ["RGB", "YCbCr", "grayscale", "CMYK"]);
   const plan = compileGraph([input, convert, multipage], edges, {
     apiParameters: api.parameters.map((parameter) => parameter.name),
     apiParameterTypes: Object.fromEntries(api.parameters.map((parameter) => [parameter.name, parameter.type])),
@@ -113,8 +117,10 @@ test("compiles API filename and integer index bindings for the multipage TIFF bl
   assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.fromIndex, { source: "api", name: "daIndex" });
   assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.compression, { source: "api", name: "compressionTiff" });
   assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.quality, { source: "api", name: "qualitaTiff" });
+  assert.deepEqual(plan.blocks.find((block) => block.handlerId === "pdf.convert.tiff.pages")?.parameters.colorMode, { source: "api", name: "colorePagine" });
+  assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.colorMode, { source: "api", name: "coloreFinale" });
   assert.throws(() => compileGraph([input, convert, multipage], edges, {
-    apiParameters: ["documento", "nomeTiff", "daIndex", "aIndex", "compressionTiff", "qualitaTiff"], apiParameterTypes: { documento: "string", nomeTiff: "string", daIndex: "string", aIndex: "number", compressionTiff: "string", qualitaTiff: "string" },
+    apiParameters: ["documento", "nomeTiff", "daIndex", "aIndex", "compressionTiff", "qualitaTiff", "colorePagine", "coloreFinale"], apiParameterTypes: { documento: "string", nomeTiff: "string", daIndex: "string", aIndex: "number", compressionTiff: "string", qualitaTiff: "string", colorePagine: "string", coloreFinale: "string" },
   }), /deve essere di tipo numerico intero/);
 });
 

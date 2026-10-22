@@ -262,7 +262,7 @@ Schema parametri:
 Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.convert.tiff.pages` (python).
 
 Porte input: `run: control (multiplo)`, `pdf: document (obbligatorio)`.
-Porte output: `pages: documentList`, `pageCount: number`, `sourceResolution: object`, `success: control`, `error: control`.
+Porte output: `pages: documentList`, `pageCount: number`, `sourceResolution: object`, `colorMode: string`, `success: control`, `error: control`.
 
 Default:
 
@@ -270,7 +270,8 @@ Default:
 {
   "dpi": 300,
   "compression": "tiff_lzw",
-  "quality": 75
+  "quality": 75,
+  "colorMode": "RGB"
 }
 ```
 
@@ -306,12 +307,25 @@ Schema parametri:
       "type": "integer",
       "minimum": 0,
       "maximum": 100
+    },
+    "colorMode": {
+      "default": "RGB",
+      "description": "Modello colore TIFF; scegli RGB, YCbCr, grayscale o CMYK. Accetta binding da Parametri API o output stringa compatibili.",
+      "title": "Tipo colore",
+      "type": "string",
+      "enum": [
+        "RGB",
+        "YCbCr",
+        "grayscale",
+        "CMYK"
+      ]
     }
   },
   "required": [
     "dpi",
     "compression",
-    "quality"
+    "quality",
+    "colorMode"
   ],
   "additionalProperties": false
 }
@@ -322,7 +336,7 @@ Schema parametri:
 Categoria: Output. Icona Lucide: `FileOutput`. Handler: `output.tiff.createMultipage` (orchestrator).
 
 Porte input: `run: control (multiplo)`, `pages: documentList`, `tiffs: document (multiplo)`.
-Porte output: `tiff: document`, `pageCount: number`, `success: control`, `error: control`.
+Porte output: `tiff: document`, `pageCount: number`, `colorMode: string`, `success: control`, `error: control`.
 
 Default:
 
@@ -331,7 +345,8 @@ Default:
   "fromIndex": 0,
   "toIndex": 0,
   "compression": "tiff_lzw",
-  "quality": 75
+  "quality": 75,
+  "colorMode": "RGB"
 }
 ```
 
@@ -381,6 +396,18 @@ Schema parametri:
       "type": "integer",
       "minimum": 0,
       "maximum": 100
+    },
+    "colorMode": {
+      "default": "RGB",
+      "description": "Modello colore da applicare alle pagine del TIFF; accetta binding da Parametri API o output stringa compatibili.",
+      "title": "Tipo colore",
+      "type": "string",
+      "enum": [
+        "RGB",
+        "YCbCr",
+        "grayscale",
+        "CMYK"
+      ]
     }
   },
   "required": [
@@ -388,7 +415,8 @@ Schema parametri:
     "fromIndex",
     "toIndex",
     "compression",
-    "quality"
+    "quality",
+    "colorMode"
   ],
   "additionalProperties": false
 }

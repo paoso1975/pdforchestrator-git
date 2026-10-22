@@ -1083,8 +1083,12 @@ class WorkflowExecutor:
                         raise ToolError("INVALID_PARAMS", f"Intervallo TIFF non valido: usare indici inclusivi 1-based tra 1 e {len(candidates)}, oppure 0 per l'estremo completo.")
                     selected = candidates[first - 1:last]
                     compression = parameters.get("compression", "tiff_lzw")
+                    color_mode = parameters.get("colorMode", "RGB")
+                    color_options = {"RGB": ("RGB", 2), "YCbCr": ("YCbCr", 6), "grayscale": ("L", 1), "CMYK": ("CMYK", 5)}
                     if compression not in {"tiff_lzw", "tiff_adobe_deflate", "raw", "jpeg"}:
                         raise ToolError("INVALID_PARAMS", "compression deve essere tiff_lzw, tiff_adobe_deflate, raw o jpeg.")
+                    if color_mode not in color_options:
+                        raise ToolError("INVALID_PARAMS", "colorMode deve essere RGB, YCbCr, grayscale o CMYK.")
                     quality = 75
                     if compression == "jpeg":
                         quality = parameters.get("quality", 75)
@@ -1105,9 +1109,10 @@ class WorkflowExecutor:
                                     width, height = image.size
                                     if width <= 0 or height <= 0 or width * height > 50_000_000:
                                         raise ToolError("TIFF_PAGE_RESOURCE_LIMIT", f"La pagina TIFF {first + index - 1} supera il limite di 50 milioni di pixel.")
-                                    page = image.convert("RGB")
+                                    pillow_mode, photometric = color_options[color_mode]
+                                    page = image.convert(pillow_mode)
                                     try:
-                                        save_options: dict[str, Any] = {"format": "TIFF", "compression": compression, "dpi": image.info.get("dpi", (300, 300))}
+                                        save_options: dict[str, Any] = {"format": "TIFF", "compression": compression, "dpi": image.info.get("dpi", (300, 300)), "photometric": photometric}
                                         if compression == "jpeg":
                                             save_options["quality"] = quality
                                         page.save(writer, **save_options)
@@ -1123,7 +1128,7 @@ class WorkflowExecutor:
                         raise ToolError("TIFF_ENCODE_FAILED", "Creazione del TIFF multipagina selezionato non riuscita.") from exc
                     context.check()
                     artifact = _register_output(outputs, {"path": str(multipage_path), "filename": filename, "contentType": "image/tiff", "nodeId": node_id})
-                    result = ToolResult({"tiff": str(multipage_path), "filename": artifact["filename"], "pageCount": len(selected)}, len(selected))
+                    result = ToolResult({"tiff": str(multipage_path), "filename": artifact["filename"], "pageCount": len(selected), "colorMode": color_mode}, len(selected))
                 else:
                     report_start()
                     function = self.registry.get(handler_id, version)

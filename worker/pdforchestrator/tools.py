@@ -624,10 +624,14 @@ def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: di
     reader = context.pdf(source)
     dpi = params.get("dpi", 300)
     compression = params.get("compression", "tiff_lzw")
+    color_mode = params.get("colorMode", "RGB")
+    color_options = {"RGB": ("RGB", 2), "YCbCr": ("YCbCr", 6), "grayscale": ("L", 1), "CMYK": ("CMYK", 5)}
     if not isinstance(dpi, int) or isinstance(dpi, bool) or not 72 <= dpi <= 1200:
         raise ToolError("INVALID_PARAMS", "dpi deve essere un numero intero tra 72 e 1200.")
     if compression not in {"tiff_lzw", "tiff_adobe_deflate", "raw", "jpeg"}:
         raise ToolError("INVALID_PARAMS", "compression deve essere tiff_lzw, tiff_adobe_deflate, raw o jpeg.")
+    if color_mode not in color_options:
+        raise ToolError("INVALID_PARAMS", "colorMode deve essere RGB, YCbCr, grayscale o CMYK.")
     quality = 75
     if compression == "jpeg":
         quality = params.get("quality", 75)
@@ -693,9 +697,10 @@ def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: di
         page_path = context.output_path(".tiff")
         try:
             with Image.open(rendered) as rendered_image:
-                page_image = rendered_image.convert("RGB")
+                pillow_mode, photometric = color_options[color_mode]
+                page_image = rendered_image.convert(pillow_mode)
                 try:
-                    save_options: dict[str, Any] = {"format": "TIFF", "compression": compression, "dpi": (dpi, dpi)}
+                    save_options: dict[str, Any] = {"format": "TIFF", "compression": compression, "dpi": (dpi, dpi), "photometric": photometric}
                     if compression == "jpeg":
                         save_options["quality"] = quality
                     page_image.save(page_path, **save_options)
@@ -712,7 +717,7 @@ def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: di
         "minimumEmbeddedDpi": minimum_embedded_dpi,
         "requestedDpi": dpi,
     }
-    return ToolResult({"pages": page_files, "pageCount": len(reader.pages), "sourceResolution": source_resolution}, len(reader.pages))
+    return ToolResult({"pages": page_files, "pageCount": len(reader.pages), "sourceResolution": source_resolution, "colorMode": color_mode}, len(reader.pages))
 
 
 def _split(context: ToolContext, inputs: dict[str, Any], params: dict[str, Any]) -> ToolResult:

@@ -376,8 +376,8 @@ class TiffConversionTests(unittest.TestCase):
             graph = {
                 "nodes": [
                     {"id": "input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "documento"}}},
-                    {"id": "convert", "data": {"toolId": "pdf.convert.tiff.pages", "toolVersion": "1.0.0", "parameters": {"dpi": 180, "compression": "tiff_lzw"}}},
-                    {"id": "multipage", "data": {"toolId": "output.tiff.createMultipage", "toolVersion": "1.0.0", "parameters": {"filename": "estratto.tiff", "fromIndex": 2, "toIndex": 2, "compression": "jpeg", "quality": 85}}},
+                    {"id": "convert", "data": {"toolId": "pdf.convert.tiff.pages", "toolVersion": "1.0.0", "parameters": {"dpi": 180, "compression": "tiff_lzw", "colorMode": "YCbCr"}}},
+                    {"id": "multipage", "data": {"toolId": "output.tiff.createMultipage", "toolVersion": "1.0.0", "parameters": {"filename": "estratto.tiff", "fromIndex": 2, "toIndex": 2, "compression": "jpeg", "quality": 85, "colorMode": "grayscale"}}},
                 ],
                 "edges": [
                     {"source": "input", "target": "convert", "sourceHandle": "pdf", "targetHandle": "pdf"},
@@ -405,6 +405,13 @@ class TiffConversionTests(unittest.TestCase):
                 self.assertEqual(image.format, "TIFF")
                 self.assertEqual(image.n_frames, 1)
                 self.assertEqual(image.info.get("compression"), "jpeg")
+                self.assertEqual(image.tag_v2.get(262), 1)
+                self.assertEqual(image.mode, "L")
+            converted_pages = sorted(Path(context.workdir).glob("*.tiff"))
+            self.assertEqual(len(converted_pages), 4)
+            with Image.open(converted_pages[0]) as image:
+                self.assertEqual(image.tag_v2.get(262), 6)
+                self.assertEqual(image.info.get("compression"), "tiff_lzw")
 
             graph["nodes"][2]["data"]["parameters"] = {"filename": "tutte.tiff", "fromIndex": 0, "toIndex": 0}
             with patch.dict(os.environ, {"PDFIMAGES_BIN": "pdfimages"}), \
