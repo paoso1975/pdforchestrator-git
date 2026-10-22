@@ -14,7 +14,7 @@ from .tools import ToolError
 
 
 class StorageAdapter:
-    """Cubbit S3 adapter. PDFs exist only inside a per-job temporary directory."""
+    """Cubbit S3 adapter. Documents and artifacts use isolated per-job temporary paths."""
     def __init__(self) -> None:
         endpoint = os.environ.get("CUBBIT_S3_ENDPOINT"); region = os.environ.get("CUBBIT_S3_REGION"); self.bucket = os.environ.get("CUBBIT_S3_BUCKET")
         key = os.environ.get("CUBBIT_S3_ACCESS_KEY_ID"); secret = os.environ.get("CUBBIT_S3_SECRET_ACCESS_KEY")
@@ -38,12 +38,24 @@ class StorageAdapter:
         return target
 
     def upload(self, path: Path, organization_id: str, execution_id: str, attempt: int, node_id: str, filename: str, content_type: str = "application/pdf") -> dict[str, Any]:
-        if content_type != "application/pdf": raise ToolError("INVALID_CONTENT_TYPE", "Gli artifact pdf.output devono essere application/pdf.")
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name)[:120] or "output.pdf"
-        if not safe.lower().endswith(".pdf"): safe = f"{safe}.pdf"
+        extensions = {"application/pdf": (".pdf",), "image/tiff": (".tif", ".tiff")}
+        if content_type not in extensions:
+            raise ToolError("INVALID_CONTENT_TYPE", "Sono supportati gli artifact application/pdf e image/tiff.")
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name)[:120] or ("output.pdf" if content_type == "application/pdf" else "output.tiff")
+        if not safe.lower().endswith(extensions[content_type]):
+            raise ToolError("INVALID_OUTPUT_FILENAME", "L'estensione del nome file non corrisponde al tipo MIME dell'artifact.")
         key = f"{organization_id}/executions/{execution_id}/attempt-{attempt}/{re.sub(r'[^A-Za-z0-9_-]', '_', node_id)}/{safe}"
-        if not path.is_file() or path.stat().st_size <= 0 or path.stat().st_size > int(os.environ.get("WORKER_MAX_PDF_BYTES", str(100 * 1024 * 1024))):
-            raise ToolError("OUTPUT_SIZE_LIMIT", "PDF di output vuoto o oltre il limite dimensioni.")
+        max_output_variable = "WORKER_MAX_PDF_BYTES" if content_type == "application/pdf" else "WORKER_MAX_OUTPUT_BYTES"
+        default_max_output_bytes = 100 * 1024 * 1024 if content_type == "application/pdf" else 500 * 1024 * 1024
+        max_output_bytes = int(os.environ.get(max_output_variable, str(default_max_output_bytes)))
+        if not path.is_file() or path.stat().st_size <= 0 or path.stat().st_size > max_output_bytes:
+            raise ToolError("OUTPUT_SIZE_LIMIT", "Artifact di output vuoto o oltre il limite dimensioni.")
+        with path.open("rb") as stream:
+            header = stream.read(8)
+        if content_type == "application/pdf" and not header.startswith(b"%PDF-"):
+            raise ToolError("INVALID_OUTPUT_FORMAT", "Il contenuto dell'artifact non corrisponde a un PDF.")
+        if content_type == "image/tiff" and not (header.startswith((b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"))):
+            raise ToolError("INVALID_OUTPUT_FORMAT", "Il contenuto dell'artifact non corrisponde a un TIFF valido.")
         digest = hashlib.sha256(); size = 0
         with path.open("rb") as stream:
             while chunk := stream.read(1024 * 1024): digest.update(chunk); size += len(chunk)
