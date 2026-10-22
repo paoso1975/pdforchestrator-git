@@ -377,7 +377,7 @@ class TiffConversionTests(unittest.TestCase):
                 "nodes": [
                     {"id": "input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "documento"}}},
                     {"id": "convert", "data": {"toolId": "pdf.convert.tiff.pages", "toolVersion": "1.0.0", "parameters": {"dpi": 180, "compression": "tiff_lzw"}}},
-                    {"id": "multipage", "data": {"toolId": "output.tiff.createMultipage", "toolVersion": "1.0.0", "parameters": {"filename": "estratto.tiff", "fromIndex": 2, "toIndex": 2}}},
+                    {"id": "multipage", "data": {"toolId": "output.tiff.createMultipage", "toolVersion": "1.0.0", "parameters": {"filename": "estratto.tiff", "fromIndex": 2, "toIndex": 2, "compression": "jpeg", "quality": 85}}},
                 ],
                 "edges": [
                     {"source": "input", "target": "convert", "sourceHandle": "pdf", "targetHandle": "pdf"},
@@ -404,6 +404,7 @@ class TiffConversionTests(unittest.TestCase):
             with Image.open(result["files"][0]["path"]) as image:
                 self.assertEqual(image.format, "TIFF")
                 self.assertEqual(image.n_frames, 1)
+                self.assertEqual(image.info.get("compression"), "jpeg")
 
             graph["nodes"][2]["data"]["parameters"] = {"filename": "tutte.tiff", "fromIndex": 0, "toIndex": 0}
             with patch.dict(os.environ, {"PDFIMAGES_BIN": "pdfimages"}), \

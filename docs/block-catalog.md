@@ -329,7 +329,9 @@ Default:
 ```json
 {
   "fromIndex": 0,
-  "toIndex": 0
+  "toIndex": 0,
+  "compression": "tiff_lzw",
+  "quality": 75
 }
 ```
 
@@ -360,12 +362,33 @@ Schema parametri:
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
+    },
+    "compression": {
+      "default": "tiff_lzw",
+      "description": "Compressione da applicare alle pagine: tiff_lzw, tiff_adobe_deflate, raw oppure jpeg (lossy).",
+      "type": "string",
+      "enum": [
+        "tiff_lzw",
+        "tiff_adobe_deflate",
+        "raw",
+        "jpeg"
+      ]
+    },
+    "quality": {
+      "default": 75,
+      "description": "Qualità JPEG da 0 a 100; letta solo quando compression=jpeg.",
+      "title": "Qualità",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
     }
   },
   "required": [
     "filename",
     "fromIndex",
-    "toIndex"
+    "toIndex",
+    "compression",
+    "quality"
   ],
   "additionalProperties": false
 }

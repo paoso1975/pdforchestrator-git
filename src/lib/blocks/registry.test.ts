@@ -303,7 +303,7 @@ test("PDF to TIFF converter and output blocks expose typed, bounded TIFF contrac
   assert.equal(convert.parametersSchema.safeParse({ dpi: 300, compression: "tiff_lzw" }).success, true);
   assert.equal(convert.parametersSchema.safeParse({ dpi: 71 }).success, false);
   assert.equal(convert.parametersSchema.safeParse({ dpi: 1201 }).success, false);
-  assert.equal(convert.parametersSchema.safeParse({ dpi: 300, compression: "jpeg" }).success, true);
+  assert.equal(convert.parametersSchema.safeParse({ dpi: 300, compression: "jpeg" }).success, false);
   assert.deepEqual(convert.outputs.filter((port) => ["pages", "multipage", "pageCount", "sourceResolution"].includes(port.id)).map(({ id, type }) => [id, type]), [
     ["pages", "documentList"], ["multipage", "document"], ["pageCount", "number"], ["sourceResolution", "object"],
   ]);
@@ -326,6 +326,8 @@ test("single-page TIFF conversion and multipage TIFF assembly expose API-ready c
   assert.equal(create.inputs.find((port) => port.id === "pages")?.type, "documentList");
   assert.equal(create.inputs.find((port) => port.id === "tiffs")?.multiple, true);
   assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff" }).success, true);
+  assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff", compression: "jpeg", quality: 85 }).success, true);
+  assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff", compression: "jpeg", quality: 101 }).success, false);
   assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff", fromIndex: 0, toIndex: 0 }).success, true);
   assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff", fromIndex: 3, toIndex: 2 }).success, false);
   assert.equal(create.parametersSchema.safeParse({ filename: "../estratto.tiff" }).success, false);

@@ -1066,7 +1066,7 @@ class WorkflowExecutor:
                     artifact = _register_output(outputs, {"path": path, "filename": filename, "contentType": "image/tiff", "nodeId": node_id})
                     result = ToolResult({"tiff": path, "filename": artifact["filename"]}, 0)
                 elif tool_id == "output.tiff.createMultipage":
-                    from PIL import Image, TiffImagePlugin
+                    from PIL import Image, TiffImagePlugin, features
 
                     candidates = _worker_tiff_inputs(tool_inputs.get("pages")) + _worker_tiff_inputs(tool_inputs.get("tiffs"))
                     if not candidates:
@@ -1082,6 +1082,16 @@ class WorkflowExecutor:
                     if first > len(candidates) or last > len(candidates) or first > last:
                         raise ToolError("INVALID_PARAMS", f"Intervallo TIFF non valido: usare indici inclusivi 1-based tra 1 e {len(candidates)}, oppure 0 per l'estremo completo.")
                     selected = candidates[first - 1:last]
+                    compression = parameters.get("compression", "tiff_lzw")
+                    if compression not in {"tiff_lzw", "tiff_adobe_deflate", "raw", "jpeg"}:
+                        raise ToolError("INVALID_PARAMS", "compression deve essere tiff_lzw, tiff_adobe_deflate, raw o jpeg.")
+                    quality = 75
+                    if compression == "jpeg":
+                        quality = parameters.get("quality", 75)
+                        if not isinstance(quality, int) or isinstance(quality, bool) or not 0 <= quality <= 100:
+                            raise ToolError("INVALID_PARAMS", "quality deve essere un numero intero tra 0 e 100 quando compression è jpeg.")
+                        if not features.check("libtiff"):
+                            raise ToolError("TIFF_COMPRESSION_UNAVAILABLE", "La compressione TIFF JPEG richiede Pillow compilato con supporto libtiff sul worker.")
                     filename = parameters.get("filename")
                     if not isinstance(filename, str) or Path(filename).name != filename or ".." in filename or not filename.lower().endswith((".tif", ".tiff")):
                         raise ToolError("INVALID_PARAMS", "filename deve essere un nome file TIFF sicuro con estensione .tif o .tiff.")
@@ -1097,7 +1107,10 @@ class WorkflowExecutor:
                                         raise ToolError("TIFF_PAGE_RESOURCE_LIMIT", f"La pagina TIFF {first + index - 1} supera il limite di 50 milioni di pixel.")
                                     page = image.convert("RGB")
                                     try:
-                                        page.save(writer, format="TIFF", compression="tiff_lzw", dpi=image.info.get("dpi", (300, 300)))
+                                        save_options: dict[str, Any] = {"format": "TIFF", "compression": compression, "dpi": image.info.get("dpi", (300, 300))}
+                                        if compression == "jpeg":
+                                            save_options["quality"] = quality
+                                        page.save(writer, **save_options)
                                     finally:
                                         page.close()
                                 if index < len(selected):

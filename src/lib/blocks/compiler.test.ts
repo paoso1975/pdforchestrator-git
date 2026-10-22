@@ -97,6 +97,8 @@ test("compiles API filename and integer index bindings for the multipage TIFF bl
     filename: { source: "api", name: "nomeTiff" },
     fromIndex: { source: "api", name: "daIndex" },
     toIndex: { source: "api", name: "aIndex" },
+    compression: { source: "api", name: "compressionTiff" },
+    quality: { source: "api", name: "qualitaTiff" },
   };
   const edges: BatchEdge[] = [
     { id: "input-convert", source: input.id, target: convert.id, sourceHandle: "pdf", targetHandle: "pdf" },
@@ -109,8 +111,10 @@ test("compiles API filename and integer index bindings for the multipage TIFF bl
     apiParameterTypes: Object.fromEntries(api.parameters.map((parameter) => [parameter.name, parameter.type])),
   });
   assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.fromIndex, { source: "api", name: "daIndex" });
+  assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.compression, { source: "api", name: "compressionTiff" });
+  assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.quality, { source: "api", name: "qualitaTiff" });
   assert.throws(() => compileGraph([input, convert, multipage], edges, {
-    apiParameters: ["documento", "nomeTiff", "daIndex", "aIndex"], apiParameterTypes: { documento: "string", nomeTiff: "string", daIndex: "string", aIndex: "number" },
+    apiParameters: ["documento", "nomeTiff", "daIndex", "aIndex", "compressionTiff", "qualitaTiff"], apiParameterTypes: { documento: "string", nomeTiff: "string", daIndex: "string", aIndex: "number", compressionTiff: "string", qualitaTiff: "string" },
   }), /deve essere di tipo numerico intero/);
 });
 
