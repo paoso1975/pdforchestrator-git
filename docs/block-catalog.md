@@ -257,6 +257,120 @@ Schema parametri:
 }
 ```
 
+## `pdf.convert.tiff.pages@1.0.0` — Converti PDF in TIFF singola pagina
+
+Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.convert.tiff.pages` (python).
+
+Porte input: `run: control (multiplo)`, `pdf: document (obbligatorio)`.
+Porte output: `pages: documentList`, `pageCount: number`, `sourceResolution: object`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{
+  "dpi": 300,
+  "compression": "tiff_lzw",
+  "quality": 75
+}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "dpi": {
+      "default": 300,
+      "description": "Risoluzione intera in DPI; collegabile a un parametro API numerico intero.",
+      "type": "integer",
+      "minimum": 72,
+      "maximum": 1200
+    },
+    "compression": {
+      "default": "tiff_lzw",
+      "description": "Compressione TIFF: tiff_lzw, tiff_adobe_deflate, raw oppure jpeg (lossy).",
+      "type": "string",
+      "enum": [
+        "tiff_lzw",
+        "tiff_adobe_deflate",
+        "raw",
+        "jpeg"
+      ]
+    },
+    "quality": {
+      "default": 75,
+      "description": "Qualità JPEG da 0 (massima compressione) a 100 (qualità massima); usata solo con compression=jpeg.",
+      "title": "Qualità",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    }
+  },
+  "required": [
+    "dpi",
+    "compression",
+    "quality"
+  ],
+  "additionalProperties": false
+}
+```
+
+## `output.tiff.createMultipage@1.0.0` — Crea TIFF multipagina
+
+Categoria: Output. Icona Lucide: `FileOutput`. Handler: `output.tiff.createMultipage` (orchestrator).
+
+Porte input: `run: control (multiplo)`, `pages: documentList`, `tiffs: document (multiplo)`.
+Porte output: `tiff: document`, `pageCount: number`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{
+  "fromIndex": 0,
+  "toIndex": 0
+}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "filename": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\]+\\.tiff?$",
+      "description": "Nome del TIFF multipagina da salvare, con estensione .tif o .tiff."
+    },
+    "fromIndex": {
+      "default": 0,
+      "description": "Da index inclusivo e 1-based; 0 o vuoto usa la prima pagina.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "toIndex": {
+      "default": 0,
+      "description": "A index inclusivo e 1-based; 0 o vuoto usa l'ultima pagina.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "filename",
+    "fromIndex",
+    "toIndex"
+  ],
+  "additionalProperties": false
+}
+```
+
 ## `pdf.merge@1.2.0` — Unisci PDF
 
 Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.merge` (python).

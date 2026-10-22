@@ -618,7 +618,7 @@ def _convert_tiff(context: ToolContext, inputs: dict[str, Any], params: dict[str
 
 def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: dict[str, Any]) -> ToolResult:
     """Render PDF pages sequentially and return only the ordered single-page TIFF list."""
-    from PIL import Image
+    from PIL import Image, features
 
     source = _first_pdf(inputs)
     reader = context.pdf(source)
@@ -626,8 +626,15 @@ def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: di
     compression = params.get("compression", "tiff_lzw")
     if not isinstance(dpi, int) or isinstance(dpi, bool) or not 72 <= dpi <= 1200:
         raise ToolError("INVALID_PARAMS", "dpi deve essere un numero intero tra 72 e 1200.")
-    if compression not in {"tiff_lzw", "tiff_adobe_deflate", "raw"}:
-        raise ToolError("INVALID_PARAMS", "compression deve essere tiff_lzw, tiff_adobe_deflate o raw.")
+    if compression not in {"tiff_lzw", "tiff_adobe_deflate", "raw", "jpeg"}:
+        raise ToolError("INVALID_PARAMS", "compression deve essere tiff_lzw, tiff_adobe_deflate, raw o jpeg.")
+    quality = 75
+    if compression == "jpeg":
+        quality = params.get("quality", 75)
+        if not isinstance(quality, int) or isinstance(quality, bool) or not 0 <= quality <= 100:
+            raise ToolError("INVALID_PARAMS", "quality deve essere un numero intero tra 0 e 100 quando compression è jpeg.")
+        if not features.check("libtiff"):
+            raise ToolError("TIFF_COMPRESSION_UNAVAILABLE", "La compressione TIFF JPEG richiede Pillow compilato con supporto libtiff sul worker.")
 
     pdfimages = os.environ.get("PDFIMAGES_BIN", "").strip() or shutil.which("pdfimages")
     if not pdfimages:
@@ -688,7 +695,10 @@ def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: di
             with Image.open(rendered) as rendered_image:
                 page_image = rendered_image.convert("RGB")
                 try:
-                    page_image.save(page_path, format="TIFF", compression=compression, dpi=(dpi, dpi))
+                    save_options: dict[str, Any] = {"format": "TIFF", "compression": compression, "dpi": (dpi, dpi)}
+                    if compression == "jpeg":
+                        save_options["quality"] = quality
+                    page_image.save(page_path, **save_options)
                 finally:
                     page_image.close()
         except Exception as exc:

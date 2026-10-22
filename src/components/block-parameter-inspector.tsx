@@ -27,7 +27,7 @@ export function BlockParameterInspector({ definition, values, apiParameters, nod
   const [previewNodes, setPreviewNodes] = useState<Record<string, Record<string, unknown>>>({});
   const [previewVariables, setPreviewVariables] = useState<Record<string, unknown>>(() => Object.fromEntries(variables.map((item) => [item.name, item.defaultValue]).filter(([, value]) => value !== undefined)));
   const schema = useMemo(() => JSON.parse(JSON.stringify(z.toJSONSchema(definition.parametersSchema, { target: "draft-7" }))) as Record<string, unknown>, [definition]);
-  const properties = (schema.properties ?? {}) as Record<string, { type?: string; description?: string; enum?: (string | number)[]; default?: unknown; minimum?: number; maximum?: number; items?: { type?: string } }>;
+  const properties = (schema.properties ?? {}) as Record<string, { title?: string; type?: string; description?: string; enum?: (string | number)[]; default?: unknown; minimum?: number; maximum?: number; items?: { type?: string } }>;
   const errors = getParameterIssues(definition, values);
   if (definition.type === "pdf.delete-pages" && values.deleteCurrentPage === true && !isInLoopBody(currentNodeId, nodes, edges)) errors.deleteCurrentPage = "Disponibile solo nel ramo body di Per ogni pagina.";
   if (definition.type === "data.setVariable" && values.scope === "loop" && !isInLoopBody(currentNodeId, nodes, edges)) errors.scope = "Una variabile loop si può impostare solo nel body di un ciclo.";
@@ -79,7 +79,7 @@ export function BlockParameterInspector({ definition, values, apiParameters, nod
       });
       const preview = getPreview(raw, context);
       return <div key={name} className={`rounded-lg border ${errors[name] ? "border-red-900/70" : "border-[#263541]"} bg-[#101923] p-3`}>
-        <div className="flex items-center gap-2"><span className="font-mono text-[10px] font-semibold text-slate-200">{name}</span><span className={`text-[8px] uppercase ${errors[name] ? "text-red-300" : "text-slate-600"}`}>{property.type ?? "json"}</span>{definition.requiredParameters.includes(name) && <span className="ml-auto rounded bg-[#152337] px-1.5 py-0.5 text-[8px] text-[#7aa1db]">Richiesto</span>}</div>
+        <div className="flex items-center gap-2"><span className="font-mono text-[10px] font-semibold text-slate-200">{property.title ?? name}</span><span className={`text-[8px] uppercase ${errors[name] ? "text-red-300" : "text-slate-600"}`}>{property.type ?? "json"}</span>{definition.requiredParameters.includes(name) && <span className="ml-auto rounded bg-[#152337] px-1.5 py-0.5 text-[8px] text-[#7aa1db]">Richiesto</span>}</div>
         {property.description && <p className="mt-1 text-[9px] leading-4 text-slate-500">{property.description}</p>}
         {!definition.requiredParameters.includes(name) && <p className="mt-1 text-[8px] text-slate-600">Facoltativo{property.default === undefined ? " · nessun default" : ` · default: ${shortValue(property.default)}`}</p>}
         <label className="mt-2 block text-[9px] text-slate-500">Origine valore<select aria-label={`Origine del parametro ${name}`} value={mode} onChange={(event) => onChange(name, changeMode(event.target.value as Mode, raw, property.default))} className={inputClass}>
