@@ -1,5 +1,6 @@
 import "server-only";
 import { S3Client } from "@aws-sdk/client-s3";
+/** MODIFICATO */
 
 function config() {
   const endpoint = process.env.S3_ENDPOINT ?? process.env.CUBBIT_S3_ENDPOINT;
