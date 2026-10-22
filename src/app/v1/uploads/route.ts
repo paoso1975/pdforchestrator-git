@@ -40,9 +40,9 @@ export async function POST(request: Request) {
       const publicPrefix = new URL(request.url).pathname.startsWith("/api/public/v1/") ? "/api/public/v1" : "/v1";
       return NextResponse.json({ fileId: file.id, state: "MULTIPART", uploadId: created.UploadId, partSizeBytes: 8 * 1024 * 1024, partsUrl: `${publicPrefix}/uploads/${id}/parts/{partNumber}`, completeUrl: `${publicPrefix}/uploads/${id}/complete`, expiresIn: 600, maxBytes: input.sizeBytes, requestId }, { status: 201 });
     }
-    // Bind the declared upload length into SigV4; the browser sends its actual
-    // File length automatically, and finalization independently verifies it.
-    const uploadUrl = await getSignedUrl(storage, new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: "application/pdf", ContentLength: input.sizeBytes, Metadata: { "pfo-file-id": id } }), { expiresIn: 600 });
+    // Keep direct PUT presigns minimal for S3-compatible gateways. Actual size,
+    // MIME and PDF signature are checked by the upload status/finalization API.
+    const uploadUrl = await getSignedUrl(storage, new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: "application/pdf" }), { expiresIn: 600 });
     return NextResponse.json({ fileId: id, state: "PENDING", method: "PUT", uploadUrl, headers: { "content-type": "application/pdf" }, expiresIn: 600, maxBytes: input.sizeBytes, requestId }, { status: 201 });
   } catch (cause) { console.error("public upload initialization failed", { requestId }); return publicApiError(cause, request); }
 }

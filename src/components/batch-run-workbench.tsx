@@ -50,7 +50,33 @@ async function describeStorageUploadError(response: Response, filename: string) 
   }
   const detail = [code, message].filter(Boolean).join(": ");
   const requestId = storageRequestId || response.headers.get("x-amz-request-id") || response.headers.get("x-amz-id-2");
-  return `Cubbit ha rifiutato ${filename} (HTTP ${response.status})${detail ? ` — ${detail}` : ""}${requestId ? ` [request ID ${requestId}]` : ""}.`;
+  return {
+    message: `Cubbit ha rifiutato ${filename} (HTTP ${response.status})${detail ? ` — ${detail}` : ""}${requestId ? ` [request ID ${requestId}]` : ""}.`,
+    code,
+    storageMessage: message,
+    storageRequestId: requestId ?? "",
+  };
+}
+
+async function reportUploadFailure(report: {
+  fileId: string;
+  requestId: string;
+  phase: "PUT_REJECTED" | "PUT_NETWORK_ERROR";
+  httpStatus?: number;
+  storageCode?: string;
+  storageMessage?: string;
+  storageRequestId?: string;
+}) {
+  try {
+    await fetch("/api/files/upload-report", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(report),
+      keepalive: true,
+    });
+  } catch {
+    // The original storage error remains visible even when diagnostic reporting fails.
+  }
 }
 
 function isTerminal(status: string) {
@@ -204,15 +230,28 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ organizationId: batch.organizationId, filename: file.name, sizeBytes: file.size, sha256 }),
         });
-        const signed = await signResponse.json() as { fileId?: string; uploadUrl?: string; headers?: Record<string, string>; error?: string };
-        if (!signResponse.ok || !signed.fileId || !signed.uploadUrl) throw new Error(signed.error ?? `Impossibile preparare l’upload di ${file.name}.`);
+        const signed = await signResponse.json() as { fileId?: string; requestId?: string; uploadUrl?: string; headers?: Record<string, string>; error?: string };
+        if (!signResponse.ok || !signed.fileId || !signed.requestId || !signed.uploadUrl) throw new Error(signed.error ?? `Impossibile preparare l’upload di ${file.name}.`);
         let uploadResponse: Response;
         try {
           uploadResponse = await fetch(signed.uploadUrl, { method: "PUT", headers: signed.headers, body: file });
         } catch {
+          await reportUploadFailure({ fileId: signed.fileId, requestId: signed.requestId, phase: "PUT_NETWORK_ERROR" });
           throw new Error(`Connessione a Cubbit non riuscita per ${file.name}. Se il browser segnala un errore CORS, verifica che il bucket consenta PUT dall'origine ${window.location.origin} con gli header firmati; controlla anche endpoint e HTTPS.`);
         }
-        if (!uploadResponse.ok) throw new Error(await describeStorageUploadError(uploadResponse, file.name));
+        if (!uploadResponse.ok) {
+          const storageError = await describeStorageUploadError(uploadResponse, file.name);
+          await reportUploadFailure({
+            fileId: signed.fileId,
+            requestId: signed.requestId,
+            phase: "PUT_REJECTED",
+            httpStatus: uploadResponse.status,
+            storageCode: storageError.code,
+            storageMessage: storageError.storageMessage,
+            storageRequestId: storageError.storageRequestId,
+          });
+          throw new Error(storageError.message);
+        }
         uploaded.push({ id: signed.fileId, filename: file.name, size: file.size });
         const next = field.kind === "pdf-list" ? [...current, ...uploaded] : uploaded;
         setUploads((state) => ({ ...state, [field.name]: next }));

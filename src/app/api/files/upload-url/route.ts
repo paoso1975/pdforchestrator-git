@@ -24,11 +24,18 @@ export async function POST(request: NextRequest) {
     const safeName = body.filename.replace(/[^\p{L}\p{N}._-]/gu, "_").slice(-120) || "input.pdf";
     const objectKey = `${body.organizationId}/inputs/${id}/${safeName}`;
     const file = await prisma.storedFile.create({ data: { id, organizationId: body.organizationId, bucket, objectKey, filename: body.filename, mimeType: "application/pdf", sizeBytes: BigInt(body.sizeBytes), sha256: body.sha256.toLowerCase(), kind: "INPUT" } });
-    // Sign the expected body length to constrain the presigned PUT. The browser
-    // supplies Content-Length automatically from the File body; JS must not set it.
-    const uploadUrl = await getSignedUrl(createStorageClient(), new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: "application/pdf", ContentLength: body.sizeBytes, Metadata: { "pfo-file-id": file.id } }), { expiresIn: 600 });
-    // Metadata is already bound into the presigned URL query. Do not send the
-    // same x-amz-meta header again from the browser (some S3 gateways reject it).
-    return NextResponse.json({ fileId: file.id, uploadUrl, method: "PUT", headers: { "content-type": "application/pdf" }, expiresIn: 600, browserDirectUploadSupported: false }, { status: 201 });
-  } catch (error) { return validationError(error); }
+    // Keep the SigV4 presign minimal for S3-compatible gateways. In particular,
+    // do not sign Content-Length (browsers control this header) or hoist custom
+    // metadata into the query string. The object is checked server-side before
+    // execution using HEAD and PDF magic bytes.
+    const uploadUrl = await getSignedUrl(createStorageClient(), new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: "application/pdf" }), { expiresIn: 600 });
+    const requestId = randomUUID();
+    const storage = new URL(getStorageConfig().endpoint);
+    const signedHeaders = new URL(uploadUrl).searchParams.get("X-Amz-SignedHeaders") ?? "unknown";
+    console.info("Cubbit upload URL created", { requestId, fileId: file.id, organizationId: body.organizationId, bucket, storageHost: storage.host, sizeBytes: body.sizeBytes, signedHeaders });
+    return NextResponse.json({ fileId: file.id, requestId, uploadUrl, method: "PUT", headers: { "content-type": "application/pdf" }, expiresIn: 600, browserDirectUploadSupported: true }, { status: 201 });
+  } catch (error) {
+    console.error("Cubbit upload URL creation failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
+    return validationError(error);
+  }
 }
