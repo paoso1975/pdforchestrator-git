@@ -30,6 +30,26 @@ function formatBytes(value: number) {
   return value < 1024 * 1024 ? `${(value / 1024).toFixed(0)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+async function describeStorageUploadError(response: Response, filename: string) {
+  const body = await response.text().catch(() => "");
+  let code = "";
+  let message = "";
+  if (body) {
+    try {
+      const xml = new DOMParser().parseFromString(body, "application/xml");
+      if (!xml.querySelector("parsererror")) {
+        code = xml.querySelector("Code")?.textContent?.trim() ?? "";
+        message = xml.querySelector("Message")?.textContent?.trim() ?? "";
+      }
+    } catch {
+      // Keep the generic status when the S3 gateway returns a non-XML error page.
+    }
+  }
+  const detail = [code, message].filter(Boolean).join(": ");
+  const requestId = response.headers.get("x-amz-request-id") || response.headers.get("x-amz-id-2");
+  return `Cubbit ha rifiutato ${filename} (HTTP ${response.status})${detail ? ` — ${detail}` : ""}${requestId ? ` [request ID ${requestId}]` : ""}.`;
+}
+
 function isTerminal(status: string) {
   return ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"].includes(status);
 }
@@ -183,8 +203,13 @@ export function BatchRunWorkbench({ batches }: { batches: RunnableBatch[] }) {
         });
         const signed = await signResponse.json() as { fileId?: string; uploadUrl?: string; headers?: Record<string, string>; error?: string };
         if (!signResponse.ok || !signed.fileId || !signed.uploadUrl) throw new Error(signed.error ?? `Impossibile preparare l’upload di ${file.name}.`);
-        const uploadResponse = await fetch(signed.uploadUrl, { method: "PUT", headers: signed.headers, body: file });
-        if (!uploadResponse.ok) throw new Error(`Il server filesystem ha rifiutato ${file.name} (HTTP ${uploadResponse.status}). Verifica che il bucket consenta PUT dal dominio dell’app tramite CORS.`);
+        let uploadResponse: Response;
+        try {
+          uploadResponse = await fetch(signed.uploadUrl, { method: "PUT", headers: signed.headers, body: file });
+        } catch {
+          throw new Error(`Connessione a Cubbit non riuscita per ${file.name}. Se il browser segnala un errore CORS, verifica che il bucket consenta PUT dall'origine ${window.location.origin} con gli header firmati; controlla anche endpoint e HTTPS.`);
+        }
+        if (!uploadResponse.ok) throw new Error(await describeStorageUploadError(uploadResponse, file.name));
         uploaded.push({ id: signed.fileId, filename: file.name, size: file.size });
         const next = field.kind === "pdf-list" ? [...current, ...uploaded] : uploaded;
         setUploads((state) => ({ ...state, [field.name]: next }));
