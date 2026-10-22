@@ -168,7 +168,8 @@ export function insertNodeOnBatchEdge(edge: BatchEdge, toolId: string, position:
 export function validateGraph(nodes: BatchNode[], edges: BatchEdge[]) {
   const issues: string[] = [];
   if (!nodes.some((node) => node.data.toolId === "input.pdf" || node.data.toolId === "input.pdf-list")) issues.push("Aggiungi un nodo Input PDF.");
-  if (!nodes.some((node) => ["output.pdf", "pdf.output", "pdf.output.apiName"].includes(node.data.toolId))) issues.push("Aggiungi un nodo Output PDF.");
+  const outputTypes = ["output.pdf", "pdf.output", "pdf.output.apiName", "output.tiff.pages", "output.tiff.multipage"];
+  if (!nodes.some((node) => outputTypes.includes(node.data.toolId))) issues.push("Aggiungi un blocco di output.");
   for (const node of nodes) {
     const tool = getBlockDefinition(node.data.toolId, node.data.toolVersion);
     if (!tool) { issues.push(`${node.data.label}: strumento non disponibile.`); continue; }
@@ -199,7 +200,12 @@ export function validateGraph(nodes: BatchNode[], edges: BatchEdge[]) {
     }
     const conditionIssues = ["logic.conditionGroup", "loop.while", "loop.repeatUntil"].includes(tool.type) ? validateConditionGroupAst(parameters.condition) : [];
     if (conditionIssues.length) issues.push(...conditionIssues.map((issue) => `${node.data.label}: ${issue}`));
-    if (tool.type === "loop.forEach") issues.push(...validateForEachConfiguration({ ...tool.defaults, ...node.data.parameters }, tool.version === "1.1.0").map((issue) => `${node.data.label}: ${issue}`));
+    if (tool.type === "loop.forEach") issues.push(...validateForEachConfiguration({ ...tool.defaults, ...node.data.parameters }, tool.version !== "1.0.0", tool.version === "1.2.0").map((issue) => `${node.data.label}: ${issue}`));
+    if (tool.type === "loop.forEach" && tool.version === "1.2.0") {
+      const pdfsEdges = edges.filter((edge) => edge.target === node.id && edge.targetHandle === "pdfs");
+      if (node.data.parameters.itemType === "document" && pdfsEdges.length !== 1) issues.push(`${node.data.label}: itemType document richiede una PDF LIST collegata alla porta pdfs.`);
+      if (node.data.parameters.itemType !== "document" && pdfsEdges.length) issues.push(`${node.data.label}: collega pdfs solo quando itemType è document.`);
+    }
     if (tool.type === "flow.jumpPage") issues.push(...validateJumpPageParameters(node.data.parameters).map((issue) => `${node.data.label}: ${issue}`));
     const parsed = conditionIssues.length ? null : tool.parametersSchema.safeParse({ ...tool.defaults, ...parameters });
     if (parsed && !parsed.success) for (const issue of parsed.error.issues) {
@@ -236,7 +242,7 @@ function validateTopology(nodes: BatchNode[], edges: BatchEdge[]): string[] {
     ids.add(node.id);
   }
   const inputs = nodes.filter((node) => ["input.pdf", "input.pdf-list"].includes(node.data.toolId));
-  const outputIds = new Set(nodes.filter((node) => ["output.pdf", "pdf.output", "pdf.output.apiName"].includes(node.data.toolId)).map((node) => node.id));
+  const outputIds = new Set(nodes.filter((node) => ["output.pdf", "pdf.output", "pdf.output.apiName", "output.tiff.pages", "output.tiff.multipage"].includes(node.data.toolId)).map((node) => node.id));
   const transfers = new Set(nodes.filter((node) => ["flow.break", "flow.continue", "flow.jumpPage"].includes(node.data.toolId)).map((node) => node.id));
   const loopTypes = new Set(["loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil"]);
   const branchTypes = new Set(["logic.if", "logic.conditionGroup", "flow.condition"]);

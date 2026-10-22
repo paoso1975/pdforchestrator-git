@@ -196,6 +196,67 @@ Schema parametri:
 }
 ```
 
+## `output.tiff.pages@1.0.0` — Output TIFF singola pagina
+
+Categoria: Output. Icona Lucide: `FileOutput`. Handler: `output.tiff.pages` (orchestrator).
+
+Porte input: `run: control (multiplo)`, `pages: documentList (obbligatorio)`.
+Porte output: `pages: documentList`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
+```
+
+## `output.tiff.multipage@1.0.0` — Output TIFF multipagina
+
+Categoria: Output. Icona Lucide: `FileOutput`. Handler: `output.tiff.multipage` (orchestrator).
+
+Porte input: `run: control (multiplo)`, `tiff: document (obbligatorio)`.
+Porte output: `tiff: document`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{
+  "filename": "output.tiff"
+}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "filename": {
+      "default": "output.tiff",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\]+\\.tiff?$"
+    }
+  },
+  "required": [
+    "filename"
+  ],
+  "additionalProperties": false
+}
+```
+
 ## `pdf.merge@1.2.0` — Unisci PDF
 
 Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.merge` (python).
@@ -543,6 +604,53 @@ Schema parametri:
   },
   "required": [
     "target"
+  ],
+  "additionalProperties": false
+}
+```
+
+## `pdf.convert.tiff@1.0.0` — Converti PDF in TIFF
+
+Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.convert.tiff` (python).
+
+Porte input: `run: control (multiplo)`, `pdf: document (obbligatorio)`.
+Porte output: `pages: documentList`, `multipage: document`, `pageCount: number`, `sourceResolution: object`, `success: control`, `error: control`.
+
+Default:
+
+```json
+{
+  "dpi": 300,
+  "compression": "tiff_lzw"
+}
+```
+
+Schema parametri:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "dpi": {
+      "default": 300,
+      "type": "integer",
+      "minimum": 72,
+      "maximum": 1200
+    },
+    "compression": {
+      "default": "tiff_lzw",
+      "type": "string",
+      "enum": [
+        "tiff_lzw",
+        "tiff_adobe_deflate",
+        "raw"
+      ]
+    }
+  },
+  "required": [
+    "dpi",
+    "compression"
   ],
   "additionalProperties": false
 }
@@ -2015,11 +2123,11 @@ Schema parametri:
 }
 ```
 
-## `loop.forEach@1.1.0` — Per ogni elemento o PDF
+## `loop.forEach@1.2.0` — Per ogni elemento o PDF
 
 Categoria: loop. Icona Lucide: `Repeat2`. Handler: `loop.forEach` (orchestrator).
 
-Porte input: `run: control (multiplo)`.
+Porte input: `run: control (multiplo)`, `pdfs: documentList`.
 Porte output: `items: array`, `count: number`, `document: document`, `documents: documentList`, `results: array`, `body: control`, `after: control`, `success: control`, `error: control`.
 
 Default:
@@ -2040,6 +2148,7 @@ Schema parametri:
   "type": "object",
   "properties": {
     "source": {
+      "description": "Binding a un array JSON; per i PDF si usa la porta pdfs.",
       "oneOf": [
         {
           "type": "object",
@@ -2200,12 +2309,11 @@ Schema parametri:
           ],
           "additionalProperties": false
         }
-      ],
-      "description": "Binding a un array JSON o a una tabella { rows: [...] } (ad esempio codes di pdf.detect-qr)."
+      ]
     },
     "itemType": {
       "default": "object",
-      "description": "Tipo degli elementi dell'array; document seleziona ogni PDF dalla lista prodotta da Input multiplo PDF.",
+      "description": "Tipo degli elementi dell'array; document scorre la porta pdfs.",
       "type": "string",
       "enum": [
         "string",
@@ -2218,7 +2326,7 @@ Schema parametri:
     },
     "columns": {
       "default": [],
-      "description": "Colonne richieste e tipizzate per accedere a item.nomeColonna nel ramo body.",
+      "description": "Colonne richieste e tipizzate per item.nomeColonna.",
       "maxItems": 64,
       "type": "array",
       "items": {
@@ -2247,7 +2355,7 @@ Schema parametri:
       }
     },
     "filter": {
-      "description": "Filtro dichiarativo applicato prima delle iterazioni; usare $item per elementi semplici.",
+      "description": "Filtro dichiarativo applicato prima delle iterazioni.",
       "type": "object",
       "properties": {
         "column": {
@@ -2290,14 +2398,13 @@ Schema parametri:
     },
     "maxIterations": {
       "default": 1000,
-      "description": "Numero massimo di elementi elaborati dopo il filtro (da 1 a 1000).",
+      "description": "Numero massimo di elementi elaborati.",
       "type": "integer",
       "exclusiveMinimum": 0,
       "maximum": 1000
     }
   },
   "required": [
-    "source",
     "itemType",
     "columns",
     "maxIterations"

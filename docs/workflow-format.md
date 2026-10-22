@@ -79,3 +79,9 @@ La versione `1.0.0` resta invariata per i cicli JSON già pubblicati. La version
 
 Il worker verifica che ogni elemento documento contenga `path`, `filename` e `fileRef`, che il file esista nell'area temporanea isolata e che sia un PDF leggibile. Il limite `maxIterations` resta 1–1000. Il filtro per colonna non si applica ai documenti; per gli array JSON, incluse le righe di `pdf.qr.readAll`, `itemType: "object"`, le colonne tipizzate e i filtri esistenti mantengono il comportamento precedente.
 
+# Conversione TIFF
+
+`pdf.convert.tiff@1.0.0` rasterizza le pagine con Poppler e codifica con Pillow alla risoluzione `dpi` (72–1200, default 300), usando `tiff_lzw`, `tiff_adobe_deflate` o `raw`. Il PDF non dichiara un DPI globale: il worker legge `pdfimages -list`, misura gli oggetti immagine raster incorporati e rifiuta `dpi` superiore al più basso PPI effettivo, con `SOURCE_RESOLUTION_TOO_LOW`. I PDF vettoriali senza immagini incorporate non hanno questo limite; il log del nodo espone `sourceResolution` per rendere esplicita la verifica. Il worker limita la rasterizzazione a 50 milioni di pixel per pagina e 300 milioni totali.
+
+Il blocco produce `pages` come lista di TIFF a pagina singola (`image/tiff`) e `multipage` come TIFF multipagina. Collegare `pages` a `output.tiff.pages@1.0.0` archivia un artifact per pagina; collegare `multipage` a `output.tiff.multipage@1.0.0` archivia un solo file (default `output.tiff`). Gli artifact seguono il normale caricamento worker su Cubbit e sono scaricabili dalla pagina di esecuzione. Il worker richiede Poppler (`pdftoppm` e `pdfimages`) e Pillow; i file restano nella directory temporanea isolata del job.
+

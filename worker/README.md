@@ -32,7 +32,7 @@ The Python worker runs outside Vercel. Vercel only creates executions, stores qu
    python -m unittest discover -s tests -v
    ```
 
-6. Install Poppler (`pdftoppm`) and Tesseract on the Windows worker host for rendering/OCR. Add their executable directories to `PATH`, or set `POPPLER_BIN` and `TESSERACT_CMD` in `worker/.env`. QR detection needs `opencv-python-headless`; barcode reading needs `zxing-cpp`. The worker logs a clear dependency error if an optional native tool is absent.
+6. Install Poppler (`pdftoppm`, `pdfimages`) and Tesseract on the Windows worker host for rendering/OCR. Add their executable directories to `PATH`, or set `POPPLER_BIN`, `PDFIMAGES_BIN`, and `TESSERACT_CMD` in `worker/.env`. `PDFIMAGES_BIN` can be omitted when `pdfimages` is on `PATH` or beside the configured `pdftoppm`. QR detection needs `opencv-python-headless`; barcode reading needs `zxing-cpp`. The worker logs a clear dependency error if an optional native tool is absent.
 7. Start the external worker:
 
    ```powershell

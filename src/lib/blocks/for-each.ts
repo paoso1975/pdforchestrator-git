@@ -29,8 +29,21 @@ function createForEachParametersSchema<T extends readonly [string, ...string[]]>
 export const forEachParametersSchema = createForEachParametersSchema(forEachTypes);
 export const forEachDocumentParametersSchema = createForEachParametersSchema(forEachDocumentTypes);
 
-export function validateForEachConfiguration(value: unknown, allowDocuments = false): string[] {
-  const parsed = (allowDocuments ? forEachDocumentParametersSchema : forEachParametersSchema).safeParse(value);
+// v1.2 reads PDF lists from its typed `pdfs` input port. The source binding
+// remains available for JSON arrays and is optional only for document loops.
+export const forEachConnectedDocumentParametersSchema = z.object({
+  source: parameterBindingSchema.optional().describe("Binding a un array JSON; per i PDF si usa la porta pdfs."),
+  itemType: z.enum(forEachDocumentTypes).default("object").describe("Tipo degli elementi dell'array; document scorre la porta pdfs."),
+  columns: z.array(forEachColumnSchema).max(64).default([]).describe("Colonne richieste e tipizzate per item.nomeColonna."),
+  filter: forEachFilterSchema.optional().describe("Filtro dichiarativo applicato prima delle iterazioni."),
+  maxIterations: z.number().int().positive().max(1000).default(1000).describe("Numero massimo di elementi elaborati."),
+}).strict().superRefine((value, context) => {
+  if (value.itemType !== "document" && !value.source) context.addIssue({ code: "custom", path: ["source"], message: "source è obbligatorio per gli array JSON." });
+});
+
+export function validateForEachConfiguration(value: unknown, allowDocuments = false, connectedDocuments = false): string[] {
+  const schema = connectedDocuments ? forEachConnectedDocumentParametersSchema : allowDocuments ? forEachDocumentParametersSchema : forEachParametersSchema;
+  const parsed = schema.safeParse(value);
   if (!parsed.success) return parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
   const { itemType, columns, filter } = parsed.data as z.infer<typeof forEachDocumentParametersSchema>;
   const names = columns.map((column) => column.name);

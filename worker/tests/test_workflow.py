@@ -293,6 +293,81 @@ class OutputFileTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "OUTPUT_COLLISION")
 
 
+class TiffConversionTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("PIL") and importlib.util.find_spec("reportlab"), "La conversione TIFF richiede Pillow e ReportLab nei test")
+    def test_pdf_to_tiff_creates_page_files_and_one_multipage_artifact(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); source = root / "source.pdf"; make_pdf(source, 2)
+            steps = []
+            graph = {
+                "nodes": [
+                    {"id": "input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "documento"}}},
+                    {"id": "convert", "data": {"toolId": "pdf.convert.tiff", "toolVersion": "1.0.0", "parameters": {"dpi": 180, "compression": "tiff_lzw"}}},
+                    {"id": "pages", "data": {"toolId": "output.tiff.pages", "toolVersion": "1.0.0", "parameters": {}}},
+                    {"id": "multipage", "data": {"toolId": "output.tiff.multipage", "toolVersion": "1.0.0", "parameters": {"filename": "all-pages.tiff"}}},
+                ],
+                "edges": [
+                    {"source": "input", "target": "convert", "sourceHandle": "pdf", "targetHandle": "pdf"},
+                    {"source": "input", "target": "convert", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "convert", "target": "pages", "sourceHandle": "pages", "targetHandle": "pages"},
+                    {"source": "convert", "target": "multipage", "sourceHandle": "multipage", "targetHandle": "tiff"},
+                    {"source": "convert", "target": "pages", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "convert", "target": "multipage", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                ],
+            }
+            context = SplitToolTests.PypdfTestContext(root)
+            context.source_filenames[str(source.resolve())] = "document originale.pdf"
+
+            def render(ctx, _pdf, page_number, prefix, dpi=None):
+                path = ctx.workdir / f"{prefix}-{page_number}.png"
+                Image.new("RGB", (120 + page_number, 80), "white").save(path, dpi=(dpi, dpi))
+                return path
+
+            listing = "page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio\n"
+            with patch.dict(os.environ, {"PDFIMAGES_BIN": "pdfimages"}), \
+                 patch("pdforchestrator.tools._run_isolated", return_value=subprocess.CompletedProcess(["pdfimages"], 0, listing, "")), \
+                 patch("pdforchestrator.tools._render_page", side_effect=render):
+                result = WorkflowExecutor(build_registry()).execute(
+                    graph, {"documento": "source-ref"}, {"source-ref": str(source)}, context,
+                    steps.append, lambda *_: None,
+                )
+
+            self.assertEqual([file["filename"] for file in result["files"]], ["document_originale-page-0001.tiff", "document_originale-page-0002.tiff", "all-pages.tiff"])
+            self.assertTrue(all(file["contentType"] == "image/tiff" for file in result["files"]))
+            for file in result["files"][:2]:
+                with Image.open(file["path"]) as image:
+                    self.assertEqual(image.format, "TIFF")
+                    self.assertEqual(image.n_frames, 1)
+                    self.assertAlmostEqual(image.info["dpi"][0], 180, delta=1)
+            with Image.open(result["files"][2]["path"]) as image:
+                self.assertEqual(image.format, "TIFF")
+                self.assertEqual(image.n_frames, 2)
+            self.assertTrue(any(step.get("nodeId") == "convert" and step.get("status") == "SUCCEEDED" for step in steps))
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "La verifica DPI richiede Pillow nei test")
+    def test_pdf_to_tiff_rejects_dpi_above_original_embedded_image_resolution(self):
+        from PIL import Image
+        from reportlab.pdfgen import canvas
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); image_path = root / "scan.png"; source = root / "scan.pdf"
+            Image.new("RGB", (120, 120), "white").save(image_path)
+            page = canvas.Canvas(str(source), pagesize=(612, 792))
+            page.drawImage(str(image_path), 72, 72, width=72, height=72)
+            page.save()
+            context = SplitToolTests.PypdfTestContext(root)
+            listing = "page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio\n1 0 image 120 120 rgb 3 8 image no 3 0 72 72 1K 1%\n"
+            with patch.dict(os.environ, {"PDFIMAGES_BIN": "pdfimages"}), \
+                 patch("pdforchestrator.tools._run_isolated", return_value=subprocess.CompletedProcess(["pdfimages"], 0, listing, "")), \
+                 patch("pdforchestrator.tools._render_page") as render:
+                with self.assertRaises(ToolError) as raised:
+                    build_registry().get("pdf.convert.tiff", "1.0.0")(context, {"pdf": str(source)}, {"dpi": 150, "compression": "tiff_lzw"})
+            self.assertEqual(raised.exception.code, "SOURCE_RESOLUTION_TOO_LOW")
+            render.assert_not_called()
+
+
 class PdfaConversionTests(unittest.TestCase):
     def test_conversion_requires_successful_verapdf_report_for_selected_profile(self):
         from subprocess import CompletedProcess
@@ -1308,8 +1383,8 @@ class WorkflowTests(unittest.TestCase):
             graph = {
                 "nodes": [
                     {"id": "files", "data": {"toolId": "input.pdf-list", "toolVersion": "1.0.0", "parameters": {"parameter": "documents"}}},
-                    {"id": "each", "data": {"toolId": "loop.forEach", "toolVersion": "1.1.0", "parameters": {
-                        "source": {"source": "node", "nodeId": "files", "port": "pdfs"}, "itemType": "document", "columns": [], "maxIterations": 10,
+                    {"id": "each", "data": {"toolId": "loop.forEach", "toolVersion": "1.2.0", "parameters": {
+                        "itemType": "document", "columns": [], "maxIterations": 10,
                     }}},
                     {"id": "qr", "data": {"toolId": "pdf.qr.readAll", "toolVersion": "1.0.0", "parameters": {"startPage": 1, "dpi": 200, "concurrency": 1}}},
                     {"id": "metadata", "data": {"toolId": "pdf.write-metadata", "toolVersion": "1.0.0", "parameters": {
@@ -1319,6 +1394,7 @@ class WorkflowTests(unittest.TestCase):
                 ],
                 "edges": [
                     {"source": "files", "target": "each", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "files", "target": "each", "sourceHandle": "pdfs", "targetHandle": "pdfs"},
                     {"source": "each", "target": "qr", "sourceHandle": "document", "targetHandle": "pdf"},
                     {"source": "each", "target": "qr", "sourceHandle": "body", "targetHandle": "run", "data": {"kind": "control"}},
                     {"source": "qr", "target": "metadata", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},

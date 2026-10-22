@@ -275,14 +275,39 @@ def _execution_summary(node_id: str, tool_id: Any, version: Any, parameters: Any
 
 
 def _safe_output_filename(value: Any) -> str:
-    filename = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(str(value or "output.pdf")).name).strip("._-")
+    raw = Path(str(value or "output.pdf")).name
+    extension = Path(raw).suffix.lower()
+    if extension not in {".tif", ".tiff"}:
+        extension = ".pdf"
+    filename = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(raw).stem).strip("._-")
     if not filename:
-        filename = "output.pdf"
-    if not filename.lower().endswith(".pdf"):
-        filename = f"{filename}.pdf"
+        filename = "output"
+    filename = f"{filename}{extension}"
     if len(filename) > 120:
-        filename = f"{Path(filename).stem[:116].rstrip('._-')}.pdf"
+        filename = f"{Path(filename).stem[:120 - len(extension)].rstrip('._-')}{extension}"
     return filename
+
+
+def _validate_worker_tiff(context: Any, value: Any, *, single_page: bool) -> str:
+    from PIL import Image
+
+    if not isinstance(value, str):
+        raise ToolError("MISSING_INPUT", "Il blocco output TIFF richiede un file collegato.")
+    path = Path(value).resolve()
+    workdir = Path(context.workdir).resolve()
+    if not path.is_relative_to(workdir) or not path.is_file():
+        raise ToolError("INVALID_TIFF", "Il TIFF deve essere un file prodotto nell'area isolata del job.")
+    try:
+        with path.open("rb") as stream:
+            signature = stream.read(4)
+        if signature not in {b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"}:
+            raise ValueError("header")
+        with Image.open(path) as image:
+            if image.format != "TIFF" or (single_page and getattr(image, "n_frames", 1) != 1):
+                raise ValueError("format o numero pagine")
+    except Exception as exc:
+        raise ToolError("INVALID_TIFF", "Il file collegato non è un TIFF valido nel formato richiesto.") from exc
+    return str(path)
 
 
 def _register_output(outputs: list[dict[str, Any]], artifact: dict[str, Any]) -> dict[str, Any]:
@@ -417,7 +442,7 @@ class WorkflowExecutor:
                 if block.get("worker") == "python":
                     self.registry.get(block["handlerId"], str(block.get("version")))
                 elif block.get("worker") == "orchestrator":
-                    if block.get("handlerId") not in {"input.pdf", "input.pdf-list", "output.pdf", "pdf.output", "pdf.qr.removeMatchedPages", "loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil", "flow.break", "flow.continue", "flow.jumpPage", "data.setVariable"}:
+                    if block.get("handlerId") not in {"input.pdf", "input.pdf-list", "output.pdf", "output.tiff.pages", "output.tiff.multipage", "pdf.output", "pdf.qr.removeMatchedPages", "loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil", "flow.break", "flow.continue", "flow.jumpPage", "data.setVariable"}:
                         raise ToolError("INVALID_PLAN", "Handler orchestrator non supportato dal worker.")
                 else:
                     raise ToolError("INVALID_PLAN", "Runtime del blocco non supportato dal worker.")
@@ -576,7 +601,7 @@ class WorkflowExecutor:
                     target_handle = edge.get("targetHandle") or "value"; source_handle = edge.get("sourceHandle") or "value"; value = values[edge["source"]][source_handle]
                     if target_handle in tool_inputs: tool_inputs[target_handle] = [*tool_inputs[target_handle], value] if isinstance(tool_inputs[target_handle], list) else [tool_inputs[target_handle], value]
                     else: tool_inputs[target_handle] = value
-                if tool_id == "data.setVariable" or tool_id in _TRANSFER_TYPES or tool_id in ("pdf.page.delete", "pdf.delete-pages", "pdf.bookmark.add", "pdf.output", "pdf.output.apiName", "output.pdf"):
+                if tool_id == "data.setVariable" or tool_id in _TRANSFER_TYPES or tool_id in ("pdf.page.delete", "pdf.delete-pages", "pdf.bookmark.add", "pdf.output", "pdf.output.apiName", "output.pdf", "output.tiff.pages", "output.tiff.multipage"):
                     report_start()
                 if tool_id == "data.setVariable":
                     name, scope, value_type = parameters.get("name"), parameters.get("scope"), parameters.get("valueType")
@@ -706,9 +731,12 @@ class WorkflowExecutor:
                     result = ToolResult(dict(loop_value), iterations + page_count)
                 elif tool_id == "loop.forEach":
                     if _depth >= 4: raise ToolError("LOOP_DEPTH", "I cicli annidati superano la profondità massima (4).")
-                    source_items = parameters.get("source")
+                    connected_document_list = version == "1.2.0" and parameters.get("itemType") == "document"
+                    source_items = tool_inputs.get("pdfs") if connected_document_list else parameters.get("source")
                     if isinstance(source_items, dict) and isinstance(source_items.get("rows"), list): source_items = source_items["rows"]
                     if not isinstance(source_items, list): raise ToolError("INVALID_INPUT", "loop.forEach richiede un array JSON o una tabella con rows array.")
+                    if connected_document_list and any(not isinstance(item, dict) or not isinstance(item.get("fileRef"), str) or not isinstance(item.get("path"), str) for item in source_items):
+                        raise ToolError("INVALID_DOCUMENT_LIST", "La porta pdfs di loop.forEach richiede una documentList prodotta da Input multiplo PDF.")
                     if len(source_items) > 10000: raise ToolError("ITERATION_LIMIT", "La sorgente loop.forEach supera il limite di 10000 righe.")
                     item_type = parameters.get("itemType", "object"); columns = parameters.get("columns", []); filter_config = parameters.get("filter")
                     limit = parameters.get("maxIterations", 1000)
@@ -766,7 +794,7 @@ class WorkflowExecutor:
                     completed_body.update(body_ids)
                     loop_value: dict[str, Any] = {"items": source_items, "count": len(indexed_items), "body": {"active": True}}
                     if item_type == "document": loop_value["documents"] = []
-                    if version == "1.1.0": loop_value["results"] = []
+                    if version in ("1.1.0", "1.2.0"): loop_value["results"] = []
                     values[node_id] = loop_value
                     loop_frame: dict[str, Any] = {}
                     for iteration, (source_index, item) in enumerate(indexed_items):
@@ -795,7 +823,7 @@ class WorkflowExecutor:
                                     if resolved_candidate in seen_paths: continue
                                     seen_paths.add(resolved_candidate)
                                     document_results.append({"path": candidate, "filename": item["filename"], "fileRef": item["fileRef"], "contentType": "application/pdf"})
-                        if version == "1.1.0":
+                        if version in ("1.1.0", "1.2.0"):
                             visible_outputs = {}
                             for body_id in sorted(body_ids):
                                 node_outputs = values.get(body_id, {})
@@ -806,7 +834,7 @@ class WorkflowExecutor:
                             if item_type == "document": result_item["item"] = {"fileRef": item["fileRef"], "filename": item["filename"]}
                             else: result_item["item"] = item
                             loop_value["results"].append(result_item)
-                        if version == "1.1.0" and isinstance(body_result.get("files"), list): outputs.extend(body_result["files"])
+                        if version in ("1.1.0", "1.2.0") and isinstance(body_result.get("files"), list): outputs.extend(body_result["files"])
                         completed_body.update(body_ids)
                         context.check()
                         heartbeat(int((position + (iteration + 1) / max(1, len(indexed_items))) / max(1, len(order)) * 95), node_id, pages)
@@ -1002,6 +1030,28 @@ class WorkflowExecutor:
                             raise ToolError("INVALID_PARAMS", "filename deve essere un nome file PDF senza percorsi.")
                         _register_output(outputs, {"path": candidate, "filename": filename, "contentType": "application/pdf", "nodeId": node_id})
                         result = ToolResult({"pdf": candidate}, len(context.pdf(candidate).pages))
+                elif tool_id == "output.tiff.pages":
+                    pages_value = tool_inputs.get("pages")
+                    if not isinstance(pages_value, list) or not pages_value:
+                        raise ToolError("MISSING_INPUT", "L'input pages dell'output TIFF singola pagina è vuoto.")
+                    registered_pages = []
+                    for item in pages_value:
+                        if not isinstance(item, dict):
+                            raise ToolError("INVALID_TIFF", "Ogni pagina TIFF deve contenere path e filename.")
+                        path = _validate_worker_tiff(context, item.get("path"), single_page=True)
+                        filename = item.get("filename")
+                        if not isinstance(filename, str) or Path(filename).name != filename or ".." in filename or not filename.lower().endswith((".tif", ".tiff")):
+                            raise ToolError("INVALID_PARAMS", "Il nome di ogni pagina deve terminare con .tif o .tiff e non contenere percorsi.")
+                        artifact = _register_output(outputs, {"path": path, "filename": filename, "contentType": "image/tiff", "nodeId": node_id})
+                        registered_pages.append({"path": path, "filename": artifact["filename"], "contentType": "image/tiff"})
+                    result = ToolResult({"pages": registered_pages}, 0)
+                elif tool_id == "output.tiff.multipage":
+                    path = _validate_worker_tiff(context, tool_inputs.get("tiff"), single_page=False)
+                    filename = parameters.get("filename", "output.tiff")
+                    if not isinstance(filename, str) or Path(filename).name != filename or ".." in filename or not filename.lower().endswith((".tif", ".tiff")):
+                        raise ToolError("INVALID_PARAMS", "filename deve essere un nome file TIFF sicuro con estensione .tif o .tiff.")
+                    artifact = _register_output(outputs, {"path": path, "filename": filename, "contentType": "image/tiff", "nodeId": node_id})
+                    result = ToolResult({"tiff": path, "filename": artifact["filename"]}, 0)
                 else:
                     report_start()
                     function = self.registry.get(handler_id, version)
@@ -1047,7 +1097,7 @@ class WorkflowExecutor:
                     if isinstance(port_value, str) and port_value.lower().endswith(".pdf") and Path(port_value).is_file():
                         _register_output(outputs, {"path": port_value, "filename": "output.pdf", "contentType": "application/pdf", "nodeId": node_id}); break
                 if outputs: break
-        if not _internal and not outputs: raise ToolError("NO_OUTPUT", "Il flusso non ha prodotto un PDF.")
+        if not _internal and not outputs: raise ToolError("NO_OUTPUT", "Il flusso non ha prodotto un file di output.")
         return {"files": outputs, "pagesProcessed": pages, "steps": len(order), **({"controlTransfer": pending_transfer} if pending_transfer is not None else {})}
 
 

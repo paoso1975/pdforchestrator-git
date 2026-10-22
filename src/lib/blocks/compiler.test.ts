@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createNode, type BatchEdge } from "@/lib/batch-graph";
+import { createNode, validateGraph, type BatchEdge } from "@/lib/batch-graph";
 import { compileGraph } from "@/lib/blocks/compiler";
 import { generateApiDefinition } from "@/lib/api-schema";
 
@@ -49,6 +49,25 @@ test("compiles QR record matching with required API list and API supplied PDF fi
     apiParameterTypes: Object.fromEntries(api.parameters.map((item) => [item.name, item.type === "pdf" ? "string" : item.type])),
   });
   assert.deepEqual(plan.blocks.map((block) => block.handlerId), ["input.pdf", "pdf.qr.removeMatchedPages", "pdf.output"]);
+});
+
+test("compiles single-page and multipage TIFF artifact outputs", () => {
+  const input = node("input.pdf", 0), convert = node("pdf.convert.tiff", 1), pages = node("output.tiff.pages", 2), multipage = node("output.tiff.multipage", 3);
+  convert.data.parameters = { dpi: 200, compression: "tiff_lzw" };
+  multipage.data.parameters = { filename: "finale.tiff" };
+  const edges: BatchEdge[] = [
+    { id: "input-tiff", source: input.id, target: convert.id, sourceHandle: "pdf", targetHandle: "pdf" },
+    { id: "input-run", source: input.id, target: convert.id, sourceHandle: "success", targetHandle: "run", data: { kind: "control" } },
+    { id: "convert-pages", source: convert.id, target: pages.id, sourceHandle: "pages", targetHandle: "pages" },
+    { id: "convert-multipage", source: convert.id, target: multipage.id, sourceHandle: "multipage", targetHandle: "tiff" },
+    { id: "convert-pages-run", source: convert.id, target: pages.id, sourceHandle: "success", targetHandle: "run", data: { kind: "control" } },
+    { id: "convert-multipage-run", source: convert.id, target: multipage.id, sourceHandle: "success", targetHandle: "run", data: { kind: "control" } },
+  ];
+  assert.deepEqual(validateGraph([input, convert, pages, multipage], edges), []);
+  const plan = compileGraph([input, convert, pages, multipage], edges);
+  assert.deepEqual(plan.blocks.find((block) => block.nodeId === convert.id)?.parameters, { dpi: 200, compression: "tiff_lzw" });
+  assert.equal(plan.blocks.find((block) => block.nodeId === pages.id)?.handlerId, "output.tiff.pages");
+  assert.equal(plan.blocks.find((block) => block.nodeId === multipage.id)?.handlerId, "output.tiff.multipage");
 });
 
 test("compiled plan order, edge list and hashes are stable for independent nodes", () => {
@@ -214,6 +233,7 @@ test("compiles an API PDF list through forEach document into per-file operations
   each.data.parameters = {
     source: { source: "node", nodeId: files.id, port: "pdfs" }, itemType: "document", columns: [], maxIterations: 100,
   };
+  each.data.toolVersion = "1.1.0";
   metadata.data.parameters = {
     author: { source: "api", name: "author" },
     title: { source: "api", name: "title" },
@@ -248,6 +268,7 @@ test("forEach v1.1 continues to compile QR-code output arrays as object rows", (
     source: { source: "node", nodeId: qr.id, port: "codes" }, itemType: "object",
     columns: [{ name: "page", type: "number" }, { name: "value", type: "string" }, { name: "format", type: "string" }], maxIterations: 100,
   };
+  each.data.toolVersion = "1.1.0";
   setter.data.parameters = { name: "qrValue", scope: "loop", valueType: "string", value: { source: "loop", name: "item", path: ["value"] } };
   const edges: BatchEdge[] = [
     { id: "input-qr", source: input.id, target: qr.id, sourceHandle: "pdf", targetHandle: "pdf" },
@@ -260,6 +281,29 @@ test("forEach v1.1 continues to compile QR-code output arrays as object rows", (
   assert.equal(plan.blocks.find((block) => block.nodeId === each.id)?.version, "1.1.0");
   assert.deepEqual(plan.blocks.find((block) => block.nodeId === each.id)?.parameters.source, { source: "node", nodeId: qr.id, port: "codes" });
   assert.deepEqual(plan.blocks.find((block) => block.nodeId === setter.id)?.parameters.value, { source: "loop", name: "item", path: ["value"] });
+});
+
+test("forEach v1.2 accepts a directly connected PDF LIST without a source binding", () => {
+  const files = node("input.pdf-list", 0), each = node("loop.forEach", 1), metadata = node("pdf.write-metadata", 2), output = node("output.pdf", 3);
+  each.data.toolVersion = "1.2.0";
+  each.data.parameters = { itemType: "document", columns: [], maxIterations: 10 };
+  metadata.data.parameters = { author: "Test", title: "Per file", subject: "" };
+  const edges: BatchEdge[] = [
+    { id: "files-run", source: files.id, target: each.id, sourceHandle: "success", targetHandle: "run", data: { kind: "control" } },
+    { id: "files-pdfs", source: files.id, target: each.id, sourceHandle: "pdfs", targetHandle: "pdfs" },
+    { id: "loop-document", source: each.id, target: metadata.id, sourceHandle: "document", targetHandle: "pdf" },
+    { id: "loop-body", source: each.id, target: metadata.id, sourceHandle: "body", targetHandle: "run", data: { kind: "control" } },
+    { id: "loop-documents", source: each.id, target: output.id, sourceHandle: "documents", targetHandle: "documents" },
+    { id: "loop-after", source: each.id, target: output.id, sourceHandle: "after", targetHandle: "run", data: { kind: "control" } },
+  ];
+  const plan = compileGraph([files, each, metadata, output], edges, {
+    apiParameters: ["documents"], apiParameterTypes: { documents: "pdf-list" },
+  });
+  assert.equal(plan.blocks.find((block) => block.nodeId === each.id)?.version, "1.2.0");
+  assert.deepEqual(plan.blocks.find((block) => block.nodeId === each.id)?.parameters.itemType, "document");
+  assert.throws(() => compileGraph([files, each, metadata, output], edges.filter((edge) => edge.id !== "files-pdfs"), {
+    apiParameters: ["documents"], apiParameterTypes: { documents: "pdf-list" },
+  }), /PDF LIST collegata alla porta pdfs/);
 });
 
 test("compiles while/repeat loop conditions and scopes iteration only inside body", () => {

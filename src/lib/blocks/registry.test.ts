@@ -124,6 +124,15 @@ test("forEach v1.1 bridges a documentList to a current PDF, collected PDFs and i
   assert.deepEqual(validateForEachConfiguration({ source: { source: "node", nodeId: "files", port: "pdfs" }, itemType: "document", filter: { column: "filename", operator: "contains", value: ".pdf" } }, true), ["I PDF non supportano il filtro per colonna di loop.forEach."]);
 });
 
+test("forEach v1.2 has a directly connectable optional documentList input", () => {
+  const connected = getBlockDefinition("loop.forEach", "1.2.0");
+  assert.ok(connected);
+  assert.ok(connected.inputs.some((port) => port.id === "pdfs" && port.type === "documentList" && !port.required));
+  assert.equal(connected.parametersSchema.safeParse({ itemType: "document", maxIterations: 10 }).success, true);
+  assert.equal(connected.parametersSchema.safeParse({ itemType: "object", maxIterations: 10 }).success, false);
+  assert.equal(connected.parametersSchema.safeParse({ itemType: "object", source: { source: "api", name: "rows" }, maxIterations: 10 }).success, true);
+});
+
 test("lookup and variable blocks expose typed, validated contracts", () => {
   const lookup = getBlockDefinition("data.lookup", "1.0.0");
   const setter = getBlockDefinition("data.setVariable", "1.0.0");
@@ -283,6 +292,25 @@ test("PDF/A converter only exposes veraPDF-checkable supported conformance level
   assert.deepEqual(block.outputs.filter((port) => ["pdf", "validationReport"].includes(port.id)).map(({ id, type }) => [id, type]), [
     ["pdf", "document"], ["validationReport", "object"],
   ]);
+});
+
+test("PDF to TIFF converter and output blocks expose typed, bounded TIFF contracts", () => {
+  const convert = getBlockDefinition("pdf.convert.tiff", "1.0.0");
+  const pageOutput = getBlockDefinition("output.tiff.pages", "1.0.0");
+  const multipageOutput = getBlockDefinition("output.tiff.multipage", "1.0.0");
+  assert.ok(convert && pageOutput && multipageOutput);
+  assert.equal(convert.worker.worker, "python");
+  assert.equal(convert.parametersSchema.safeParse({ dpi: 300, compression: "tiff_lzw" }).success, true);
+  assert.equal(convert.parametersSchema.safeParse({ dpi: 71 }).success, false);
+  assert.equal(convert.parametersSchema.safeParse({ dpi: 1201 }).success, false);
+  assert.equal(convert.parametersSchema.safeParse({ dpi: 300, compression: "jpeg" }).success, false);
+  assert.deepEqual(convert.outputs.filter((port) => ["pages", "multipage", "pageCount", "sourceResolution"].includes(port.id)).map(({ id, type }) => [id, type]), [
+    ["pages", "documentList"], ["multipage", "document"], ["pageCount", "number"], ["sourceResolution", "object"],
+  ]);
+  assert.equal(pageOutput.inputs.find((port) => port.id === "pages")?.type, "documentList");
+  assert.equal(multipageOutput.inputs.find((port) => port.id === "tiff")?.type, "document");
+  assert.equal(multipageOutput.parametersSchema.safeParse({ filename: "risultato.tiff" }).success, true);
+  assert.equal(multipageOutput.parametersSchema.safeParse({ filename: "../risultato.tiff" }).success, false);
 });
 
 test("pdf.ocr 1.1 validates page range, languages, DPI and optional outputs without changing v1.0", () => {

@@ -11,7 +11,7 @@ Copy-Item .env.example .env
 python -m pdforchestrator.consumer
 ```
 
-Impostare URL interno Vercel `/api/internal/worker`, shared secret, credenziali Cubbit separate e directory temporanea locale isolata. Installare Tesseract e Poppler sul worker se si usano OCR/rendering; per OCR configurare le lingue installate con `TESSERACT_LANGUAGES`, il limite per pagina `OCR_PAGE_TIMEOUT_SECONDS` e `OMP_THREAD_LIMIT=1`.
+Impostare URL interno Vercel `/api/internal/worker`, shared secret, credenziali Cubbit separate e directory temporanea locale isolata. Installare Tesseract e Poppler (`pdftoppm` e `pdfimages`) sul worker se si usano OCR/rendering o conversione TIFF; per OCR configurare le lingue installate con `TESSERACT_LANGUAGES`, il limite per pagina `OCR_PAGE_TIMEOUT_SECONDS` e `OMP_THREAD_LIMIT=1`. Su Windows, se `pdfimages` non è nel `PATH` né accanto a `pdftoppm`, configurare `PDFIMAGES_BIN` nel file `.env` del worker.
 
 ## Debian / Proxmox
 

@@ -201,10 +201,21 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
       inspect(combined.condition as ConditionAst, "condition");
     }
     if (definition.type === "loop.forEach") {
-      const isDocumentLoop = definition.version === "1.1.0" && combined.itemType === "document";
-      const loopIssues = validateForEachConfiguration(combined, definition.version === "1.1.0");
+      const isConnectedVersion = definition.version === "1.2.0";
+      const isDocumentLoop = definition.version !== "1.0.0" && combined.itemType === "document";
+      const loopIssues = validateForEachConfiguration(combined, definition.version !== "1.0.0", isConnectedVersion);
       if (loopIssues.length) throw new BlockCompileError(loopIssues.map((issue) => `${node.data.label}: ${issue}`));
       const source = combined.source;
+      const pdfInputs = edges.filter((edge) => edge.target === nodeId && edge.targetHandle === "pdfs");
+      if (isConnectedVersion && isDocumentLoop) {
+        if (pdfInputs.length !== 1) throw new BlockCompileError([`${node.data.label}: itemType document richiede una PDF LIST collegata alla porta pdfs.`]);
+        const pdfSource = byId.get(pdfInputs[0].source);
+        const pdfDefinition = pdfSource && getBlockDefinition(pdfSource.data.toolId, pdfSource.data.toolVersion);
+        if (pdfDefinition?.outputs.find((port) => port.id === pdfInputs[0].sourceHandle)?.type !== "documentList") throw new BlockCompileError([`${node.data.label}: la porta pdfs accetta un output documentList, come Input multiplo PDF.`]);
+      } else if (isConnectedVersion && pdfInputs.length) {
+        throw new BlockCompileError([`${node.data.label}: collega pdfs solo quando itemType è document.`]);
+      }
+      if (isConnectedVersion && combined.itemType === "document" && source !== undefined) throw new BlockCompileError([`${node.data.label}: per itemType document usa la porta pdfs, senza source.`]);
       if (isParameterBinding(source)) {
         let sourceType: string | undefined;
         if (source.source === "api") sourceType = options.apiParameterTypes?.[source.name];
@@ -214,7 +225,7 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
           sourceType = sourceDefinition?.outputs.find((port) => port.id === source.port)?.type;
         } else if (source.source === "constant") sourceType = Array.isArray(source.value) || source.value && typeof source.value === "object" && Array.isArray((source.value as { rows?: unknown }).rows) ? "array" : undefined;
         if (sourceType && !["array", "documentList", "pdf-list", "json"].includes(sourceType)) throw new BlockCompileError([`${node.data.label}: source deve risolvere a un array o a una tabella JSON, ricevuto ${sourceType}.`]);
-        if (isDocumentLoop) {
+        if (isDocumentLoop && !isConnectedVersion) {
           const sourceNode = source.source === "node" ? byId.get(source.nodeId) : undefined;
           const sourceDefinition = sourceNode && getBlockDefinition(sourceNode.data.toolId, sourceNode.data.toolVersion);
           if (source.source !== "node" || sourceDefinition?.outputs.find((port) => port.id === source.port)?.type !== "documentList") {
@@ -225,7 +236,7 @@ export function compileGraph(nodes: BatchNode[], edges: BatchEdge[], options: {
               throw new BlockCompileError([`${node.data.label}: la porta document è disponibile solo nel ramo body del ciclo.`]);
             }
           }
-        } else if (sourceType === "documentList" || edges.some((edge) => edge.source === nodeId && edge.sourceHandle === "document")) {
+        } else if (!isConnectedVersion && (sourceType === "documentList" || edges.some((edge) => edge.source === nodeId && edge.sourceHandle === "document"))) {
           throw new BlockCompileError([`${node.data.label}: una documentList richiede itemType document e la porta document v1.1.0.`]);
         }
       }
