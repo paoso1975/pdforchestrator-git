@@ -23,7 +23,11 @@ export async function POST(request: NextRequest) {
     const safeName = body.filename.replace(/[^\p{L}\p{N}._-]/gu, "_").slice(-120) || "input.pdf";
     const objectKey = `${body.organizationId}/inputs/${id}/${safeName}`;
     const file = await prisma.storedFile.create({ data: { id, organizationId: body.organizationId, bucket, objectKey, filename: body.filename, mimeType: "application/pdf", sizeBytes: BigInt(body.sizeBytes), sha256: body.sha256.toLowerCase(), kind: "INPUT" } });
+    // Sign the expected body length to constrain the presigned PUT. The browser
+    // supplies Content-Length automatically from the File body; JS must not set it.
     const uploadUrl = await getSignedUrl(createStorageClient(), new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: "application/pdf", ContentLength: body.sizeBytes, Metadata: { "pfo-file-id": file.id } }), { expiresIn: 600 });
-    return NextResponse.json({ fileId: file.id, uploadUrl, method: "PUT", headers: { "content-type": "application/pdf", "x-amz-meta-pfo-file-id": file.id }, expiresIn: 600, browserDirectUploadSupported: false }, { status: 201 });
+    // Metadata is already bound into the presigned URL query. Do not send the
+    // same x-amz-meta header again from the browser (some S3 gateways reject it).
+    return NextResponse.json({ fileId: file.id, uploadUrl, method: "PUT", headers: { "content-type": "application/pdf" }, expiresIn: 600, browserDirectUploadSupported: false }, { status: 201 });
   } catch (error) { return validationError(error); }
 }

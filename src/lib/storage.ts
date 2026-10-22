@@ -16,5 +16,8 @@ function config() {
 export function getStorageConfig() { return config(); }
 export function createStorageClient() {
   const { endpoint, region, credentials, forcePathStyle } = config();
-  return new S3Client({ endpoint, region, credentials, forcePathStyle });
+  // Cubbit accepts S3 checksum headers but does not currently evaluate them.
+  // AWS SDK v3 defaults can add CRC32 query parameters to presigned URLs; keep
+  // browser PUT/UploadPart URLs to the interoperable SigV4 request shape.
+  return new S3Client({ endpoint, region, credentials, forcePathStyle, requestChecksumCalculation: "WHEN_REQUIRED", responseChecksumValidation: "WHEN_REQUIRED" });
 }

@@ -34,19 +34,21 @@ async function describeStorageUploadError(response: Response, filename: string) 
   const body = await response.text().catch(() => "");
   let code = "";
   let message = "";
+  let storageRequestId = "";
   if (body) {
     try {
       const xml = new DOMParser().parseFromString(body, "application/xml");
       if (!xml.querySelector("parsererror")) {
         code = xml.querySelector("Code")?.textContent?.trim() ?? "";
         message = xml.querySelector("Message")?.textContent?.trim() ?? "";
+        storageRequestId = xml.querySelector("RequestId")?.textContent?.trim() ?? "";
       }
     } catch {
       // Keep the generic status when the S3 gateway returns a non-XML error page.
     }
   }
   const detail = [code, message].filter(Boolean).join(": ");
-  const requestId = response.headers.get("x-amz-request-id") || response.headers.get("x-amz-id-2");
+  const requestId = storageRequestId || response.headers.get("x-amz-request-id") || response.headers.get("x-amz-id-2");
   return `Cubbit ha rifiutato ${filename} (HTTP ${response.status})${detail ? ` — ${detail}` : ""}${requestId ? ` [request ID ${requestId}]` : ""}.`;
 }
 

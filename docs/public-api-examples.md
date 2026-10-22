@@ -31,7 +31,7 @@ base = "https://api.pdforchestrator.com"
 
 ## Upload, queue, poll, download
 
-1. POST `/api/public/v1/uploads` with a signed body `{"filename":"invoice.pdf","sizeBytes":12345,"sha256":"<64 hex>"}`. Hash exact bytes locally. PUT the file directly to the returned Cubbit `uploadUrl`, setting every returned header, including `content-type` and `x-amz-meta-pfo-file-id`. For multipart sessions, request a signed part URL for each part and POST part numbers/ETags to `completeUrl`.
+1. POST `/api/public/v1/uploads` with a signed body `{"filename":"invoice.pdf","sizeBytes":12345,"sha256":"<64 hex>"}`. Hash exact bytes locally. PUT the file directly to the returned Cubbit `uploadUrl`, setting the returned `content-type` header. The file reference metadata is already bound into the signed URL. For multipart sessions, request a signed part URL for each part and POST part numbers/ETags to `completeUrl`.
 2. GET `/api/public/v1/uploads/{fileId}` until it reports `UPLOADED`.
 3. POST `/api/public/v1/batches/{slug}/runs` with `{"input":{"document":"<fileId>"}}`, signed over exact JSON bytes and an `Idempotency-Key`. If the credential is scoped to specific versions, add the signed query parameter `?versionId=<publishedVersionUuid>`. The server returns 202 with `runId` and `statusUrl`. Repeating the same key and payload returns the same run.
 4. Poll GET `/api/public/v1/runs/{runId}` and GET `/api/public/v1/runs/{runId}/steps`.
