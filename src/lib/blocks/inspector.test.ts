@@ -28,6 +28,7 @@ test("TIFF dpi picker accepts numeric API parameters only for the dpi field", ()
   assert.equal(isApiParameterCompatible("pdf.convert.tiff", "dpi", "integer", "string"), false);
   assert.equal(isApiParameterCompatible("pdf.rotate", "degrees", "number", "number"), true);
   assert.equal(isApiParameterCompatible("pdf.rotate", "degrees", "number", "string"), false);
+  assert.equal(isApiParameterCompatible("output.tiff.createMultipage", "fromIndex", "integer", "number"), true);
 });
 
 test("condition group inspector reports an unset or over-complex AST inline", () => {

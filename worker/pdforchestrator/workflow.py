@@ -310,6 +310,19 @@ def _validate_worker_tiff(context: Any, value: Any, *, single_page: bool) -> str
     return str(path)
 
 
+def _worker_tiff_inputs(value: Any) -> list[dict[str, str]]:
+    """Flatten a TIFF document/list input into ordered local file references."""
+    items: list[dict[str, str]] = []
+    if isinstance(value, list):
+        for item in value:
+            items.extend(_worker_tiff_inputs(item))
+    elif isinstance(value, dict) and isinstance(value.get("path"), str):
+        items.append({"path": value["path"], "filename": str(value.get("filename") or Path(value["path"]).name)})
+    elif isinstance(value, str):
+        items.append({"path": value, "filename": Path(value).name})
+    return items
+
+
 def _register_output(outputs: list[dict[str, Any]], artifact: dict[str, Any]) -> dict[str, Any]:
     filename = _safe_output_filename(artifact.get("filename"))
     policy = artifact.get("collisionPolicy", "rename")
@@ -442,7 +455,7 @@ class WorkflowExecutor:
                 if block.get("worker") == "python":
                     self.registry.get(block["handlerId"], str(block.get("version")))
                 elif block.get("worker") == "orchestrator":
-                    if block.get("handlerId") not in {"input.pdf", "input.pdf-list", "output.pdf", "output.tiff.pages", "output.tiff.multipage", "pdf.output", "pdf.qr.removeMatchedPages", "loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil", "flow.break", "flow.continue", "flow.jumpPage", "data.setVariable"}:
+                    if block.get("handlerId") not in {"input.pdf", "input.pdf-list", "output.pdf", "output.tiff.pages", "output.tiff.multipage", "output.tiff.createMultipage", "pdf.output", "pdf.qr.removeMatchedPages", "loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil", "flow.break", "flow.continue", "flow.jumpPage", "data.setVariable"}:
                         raise ToolError("INVALID_PLAN", "Handler orchestrator non supportato dal worker.")
                 else:
                     raise ToolError("INVALID_PLAN", "Runtime del blocco non supportato dal worker.")
@@ -601,7 +614,7 @@ class WorkflowExecutor:
                     target_handle = edge.get("targetHandle") or "value"; source_handle = edge.get("sourceHandle") or "value"; value = values[edge["source"]][source_handle]
                     if target_handle in tool_inputs: tool_inputs[target_handle] = [*tool_inputs[target_handle], value] if isinstance(tool_inputs[target_handle], list) else [tool_inputs[target_handle], value]
                     else: tool_inputs[target_handle] = value
-                if tool_id == "data.setVariable" or tool_id in _TRANSFER_TYPES or tool_id in ("pdf.page.delete", "pdf.delete-pages", "pdf.bookmark.add", "pdf.output", "pdf.output.apiName", "output.pdf", "output.tiff.pages", "output.tiff.multipage"):
+                if tool_id == "data.setVariable" or tool_id in _TRANSFER_TYPES or tool_id in ("pdf.page.delete", "pdf.delete-pages", "pdf.bookmark.add", "pdf.output", "pdf.output.apiName", "output.pdf", "output.tiff.pages", "output.tiff.multipage", "output.tiff.createMultipage"):
                     report_start()
                 if tool_id == "data.setVariable":
                     name, scope, value_type = parameters.get("name"), parameters.get("scope"), parameters.get("valueType")
@@ -1052,6 +1065,52 @@ class WorkflowExecutor:
                         raise ToolError("INVALID_PARAMS", "filename deve essere un nome file TIFF sicuro con estensione .tif o .tiff.")
                     artifact = _register_output(outputs, {"path": path, "filename": filename, "contentType": "image/tiff", "nodeId": node_id})
                     result = ToolResult({"tiff": path, "filename": artifact["filename"]}, 0)
+                elif tool_id == "output.tiff.createMultipage":
+                    from PIL import Image, TiffImagePlugin
+
+                    candidates = _worker_tiff_inputs(tool_inputs.get("pages")) + _worker_tiff_inputs(tool_inputs.get("tiffs"))
+                    if not candidates:
+                        raise ToolError("MISSING_INPUT", "Collega una TIFF list o almeno un TIFF singolo al blocco.")
+                    if len(candidates) > context.max_pages:
+                        raise ToolError("PAGE_LIMIT", f"La lista TIFF supera il limite di {context.max_pages} pagine.")
+                    from_index = parameters.get("fromIndex", 0)
+                    to_index = parameters.get("toIndex", 0)
+                    if any(not isinstance(index, int) or isinstance(index, bool) or index < 0 for index in (from_index, to_index)):
+                        raise ToolError("INVALID_PARAMS", "da index e a index devono essere numeri interi non negativi.")
+                    first = from_index or 1
+                    last = to_index or len(candidates)
+                    if first > len(candidates) or last > len(candidates) or first > last:
+                        raise ToolError("INVALID_PARAMS", f"Intervallo TIFF non valido: usare indici inclusivi 1-based tra 1 e {len(candidates)}, oppure 0 per l'estremo completo.")
+                    selected = candidates[first - 1:last]
+                    filename = parameters.get("filename")
+                    if not isinstance(filename, str) or Path(filename).name != filename or ".." in filename or not filename.lower().endswith((".tif", ".tiff")):
+                        raise ToolError("INVALID_PARAMS", "filename deve essere un nome file TIFF sicuro con estensione .tif o .tiff.")
+                    multipage_path = context.output_path(".tiff")
+                    try:
+                        with TiffImagePlugin.AppendingTiffWriter(multipage_path, new=True) as writer:
+                            for index, item in enumerate(selected, 1):
+                                context.check()
+                                path = _validate_worker_tiff(context, item["path"], single_page=True)
+                                with Image.open(path) as image:
+                                    width, height = image.size
+                                    if width <= 0 or height <= 0 or width * height > 50_000_000:
+                                        raise ToolError("TIFF_PAGE_RESOURCE_LIMIT", f"La pagina TIFF {first + index - 1} supera il limite di 50 milioni di pixel.")
+                                    page = image.convert("RGB")
+                                    try:
+                                        page.save(writer, format="TIFF", compression="tiff_lzw", dpi=image.info.get("dpi", (300, 300)))
+                                    finally:
+                                        page.close()
+                                if index < len(selected):
+                                    writer.newFrame()
+                                report_step({"nodeId": node_id, "toolId": tool_id, "toolVersion": version, "status": "RUNNING", "progress": int(index * 100 / len(selected)), "event": "STEP_PROGRESS"})
+                                heartbeat(int(position / max(1, len(order)) * 95), node_id, pages)
+                    except ToolError:
+                        raise
+                    except Exception as exc:
+                        raise ToolError("TIFF_ENCODE_FAILED", "Creazione del TIFF multipagina selezionato non riuscita.") from exc
+                    context.check()
+                    artifact = _register_output(outputs, {"path": str(multipage_path), "filename": filename, "contentType": "image/tiff", "nodeId": node_id})
+                    result = ToolResult({"tiff": str(multipage_path), "filename": artifact["filename"], "pageCount": len(selected)}, len(selected))
                 else:
                     report_start()
                     function = self.registry.get(handler_id, version)

@@ -7,7 +7,7 @@ from typing import Any
 
 
 _ORCHESTRATOR_REPLAY_SAFE = {
-    "input.pdf", "input.pdf-list", "output.pdf", "output.tiff.pages", "output.tiff.multipage", "pdf.output", "loop.eachPage",
+    "input.pdf", "input.pdf-list", "output.pdf", "output.tiff.pages", "output.tiff.multipage", "output.tiff.createMultipage", "pdf.output", "loop.eachPage",
     "loop.forEach", "loop.while", "loop.repeatUntil", "flow.break",
     "flow.continue", "flow.jumpPage", "data.setVariable",
 }

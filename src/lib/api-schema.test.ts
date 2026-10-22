@@ -43,6 +43,23 @@ test("publishes TIFF dpi API binding as a required bounded integer and restores 
   assert.equal(parametersFromSchema(definition.inputSchema).find(({ name }) => name === "risoluzione")?.integer, true);
 });
 
+test("publishes multipage TIFF filename and integer range parameters for API bindings", () => {
+  const create = node("output.tiff.createMultipage", 0);
+  create.data.parameters = {
+    filename: { source: "api", name: "nomeTiff" },
+    fromIndex: { source: "api", name: "daIndex" },
+    toIndex: { source: "api", name: "aIndex" },
+  };
+  const definition = generateApiDefinition([create]);
+  assert.deepEqual(definition.issues, []);
+  assert.equal(definition.inputSchema.properties.nomeTiff.type, "string");
+  assert.equal(definition.inputSchema.required.includes("nomeTiff"), true);
+  assert.equal(definition.inputSchema.properties.daIndex.type, "integer");
+  assert.equal(definition.inputSchema.properties.aIndex.type, "integer");
+  assert.equal(definition.inputSchema.properties.daIndex.default, 0);
+  assert.equal(parametersFromSchema(definition.inputSchema).find(({ name }) => name === "daIndex")?.integer, true);
+});
+
 test("infers an API array of typed records for a forEach source", () => {
   const each = node("loop.forEach", 0);
   each.data.parameters = {

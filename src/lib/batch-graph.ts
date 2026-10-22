@@ -170,7 +170,7 @@ export function insertNodeOnBatchEdge(edge: BatchEdge, toolId: string, position:
 export function validateGraph(nodes: BatchNode[], edges: BatchEdge[]) {
   const issues: string[] = [];
   if (!nodes.some((node) => node.data.toolId === "input.pdf" || node.data.toolId === "input.pdf-list")) issues.push("Aggiungi un nodo Input PDF.");
-  const outputTypes = ["output.pdf", "pdf.output", "pdf.output.apiName", "output.tiff.pages", "output.tiff.multipage"];
+  const outputTypes = ["output.pdf", "pdf.output", "pdf.output.apiName", "output.tiff.pages", "output.tiff.multipage", "output.tiff.createMultipage"];
   if (!nodes.some((node) => outputTypes.includes(node.data.toolId))) issues.push("Aggiungi un blocco di output.");
   for (const node of nodes) {
     const tool = getBlockDefinition(node.data.toolId, node.data.toolVersion);
@@ -192,6 +192,7 @@ export function validateGraph(nodes: BatchNode[], edges: BatchEdge[]) {
     }
     if (tool.type === "pdf.qr.removeMatchedPages" && isParameterBinding(node.data.parameters.records)) parameters.records = [{ testoQR: "QR", nomeQR: "Documento" }];
     if (tool.type === "pdf.output.apiName" && isParameterBinding(node.data.parameters.filename)) parameters.filename = "Output.pdf";
+    if (tool.type === "output.tiff.createMultipage" && isParameterBinding(node.data.parameters.filename)) parameters.filename = "Output.tiff";
     if (tool.type === "pdf.bookmark.add") {
       if (isParameterBinding(node.data.parameters.page)) parameters.page = 1;
       if (isParameterBinding(node.data.parameters.description)) parameters.description = "Segnalibro";
@@ -244,7 +245,7 @@ function validateTopology(nodes: BatchNode[], edges: BatchEdge[]): string[] {
     ids.add(node.id);
   }
   const inputs = nodes.filter((node) => ["input.pdf", "input.pdf-list"].includes(node.data.toolId));
-  const outputIds = new Set(nodes.filter((node) => ["output.pdf", "pdf.output", "pdf.output.apiName", "output.tiff.pages", "output.tiff.multipage"].includes(node.data.toolId)).map((node) => node.id));
+  const outputIds = new Set(nodes.filter((node) => ["output.pdf", "pdf.output", "pdf.output.apiName", "output.tiff.pages", "output.tiff.multipage", "output.tiff.createMultipage"].includes(node.data.toolId)).map((node) => node.id));
   const transfers = new Set(nodes.filter((node) => ["flow.break", "flow.continue", "flow.jumpPage"].includes(node.data.toolId)).map((node) => node.id));
   const loopTypes = new Set(["loop.eachPage", "loop.forEach", "loop.while", "loop.repeatUntil"]);
   const branchTypes = new Set(["logic.if", "logic.conditionGroup", "flow.condition"]);

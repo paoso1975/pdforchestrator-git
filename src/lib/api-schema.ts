@@ -98,8 +98,9 @@ export function generateApiDefinition(nodes: BatchNode[], configured: ApiParamet
         const effective = declared ? declaredSchemaType(declared) : expected;
         const apiType = parameterType(effective);
         const apiSuppliedFilename = toolId === "pdf.output" && path.length === 1 && path[0] === "filenameTemplate";
-        const integer = toolId === "pdf.convert.tiff" && path.length === 1 && path[0] === "dpi" && effective?.type === "integer";
-        const defaultValue = apiSuppliedFilename || integer ? undefined : effective?.default ?? (path.length === 1 ? definition.defaults[path[0]] : undefined);
+        const integer = effective?.type === "integer";
+        const requiredApiInteger = integer && (toolId === "pdf.convert.tiff" && path.length === 1 && path[0] === "dpi");
+        const defaultValue = apiSuppliedFilename || requiredApiInteger ? undefined : effective?.default ?? (path.length === 1 ? definition.defaults[path[0]] : undefined);
         const topLevelRequired = path[0] ? schema?.required?.includes(path[0]) ?? true : true;
         const itemSchema = effective?.items ? {
           type: effective.items.type,

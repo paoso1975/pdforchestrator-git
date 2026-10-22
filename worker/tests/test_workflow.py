@@ -367,6 +367,52 @@ class TiffConversionTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "SOURCE_RESOLUTION_TOO_LOW")
             render.assert_not_called()
 
+    @unittest.skipUnless(importlib.util.find_spec("PIL") and importlib.util.find_spec("reportlab"), "La conversione TIFF richiede Pillow e ReportLab nei test")
+    def test_single_page_conversion_and_multipage_range_create_selected_pages_only(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); source = root / "source.pdf"; make_pdf(source, 3)
+            graph = {
+                "nodes": [
+                    {"id": "input", "data": {"toolId": "input.pdf", "toolVersion": "1.0.0", "parameters": {"parameter": "documento"}}},
+                    {"id": "convert", "data": {"toolId": "pdf.convert.tiff.pages", "toolVersion": "1.0.0", "parameters": {"dpi": 180, "compression": "tiff_lzw"}}},
+                    {"id": "multipage", "data": {"toolId": "output.tiff.createMultipage", "toolVersion": "1.0.0", "parameters": {"filename": "estratto.tiff", "fromIndex": 2, "toIndex": 2}}},
+                ],
+                "edges": [
+                    {"source": "input", "target": "convert", "sourceHandle": "pdf", "targetHandle": "pdf"},
+                    {"source": "input", "target": "convert", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                    {"source": "convert", "target": "multipage", "sourceHandle": "pages", "targetHandle": "pages"},
+                    {"source": "convert", "target": "multipage", "sourceHandle": "success", "targetHandle": "run", "data": {"kind": "control"}},
+                ],
+            }
+            context = SplitToolTests.PypdfTestContext(root)
+            context.source_filenames[str(source.resolve())] = "document original.pdf"
+
+            def render(ctx, _pdf, page_number, prefix, dpi=None):
+                path = ctx.workdir / f"{prefix}-{page_number}.png"
+                Image.new("RGB", (120 + page_number, 80), "white").save(path, dpi=(dpi, dpi))
+                return path
+
+            listing = "page num type width height color comp bpc enc interp object ID x-ppi y-ppi size ratio\n"
+            with patch.dict(os.environ, {"PDFIMAGES_BIN": "pdfimages"}), \
+                 patch("pdforchestrator.tools._run_isolated", return_value=subprocess.CompletedProcess(["pdfimages"], 0, listing, "")), \
+                 patch("pdforchestrator.tools._render_page", side_effect=render):
+                result = WorkflowExecutor(build_registry()).execute(graph, {"documento": "source-ref"}, {"source-ref": str(source)}, context, lambda *_: None, lambda *_: None)
+
+            self.assertEqual([(file["filename"], file["contentType"]) for file in result["files"]], [("estratto.tiff", "image/tiff")])
+            with Image.open(result["files"][0]["path"]) as image:
+                self.assertEqual(image.format, "TIFF")
+                self.assertEqual(image.n_frames, 1)
+
+            graph["nodes"][2]["data"]["parameters"] = {"filename": "tutte.tiff", "fromIndex": 0, "toIndex": 0}
+            with patch.dict(os.environ, {"PDFIMAGES_BIN": "pdfimages"}), \
+                 patch("pdforchestrator.tools._run_isolated", return_value=subprocess.CompletedProcess(["pdfimages"], 0, listing, "")), \
+                 patch("pdforchestrator.tools._render_page", side_effect=render):
+                all_pages = WorkflowExecutor(build_registry()).execute(graph, {"documento": "source-ref"}, {"source-ref": str(source)}, context, lambda *_: None, lambda *_: None)
+            with Image.open(all_pages["files"][0]["path"]) as image:
+                self.assertEqual(image.n_frames, 3)
+
 
 class PdfaConversionTests(unittest.TestCase):
     def test_conversion_requires_successful_verapdf_report_for_selected_profile(self):

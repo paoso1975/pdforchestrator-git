@@ -616,6 +616,95 @@ def _convert_tiff(context: ToolContext, inputs: dict[str, Any], params: dict[str
     return ToolResult({"pages": page_files, "multipage": str(multipage_path), "pageCount": len(reader.pages), "sourceResolution": source_resolution}, len(reader.pages))
 
 
+def _convert_tiff_pages(context: ToolContext, inputs: dict[str, Any], params: dict[str, Any]) -> ToolResult:
+    """Render PDF pages sequentially and return only the ordered single-page TIFF list."""
+    from PIL import Image
+
+    source = _first_pdf(inputs)
+    reader = context.pdf(source)
+    dpi = params.get("dpi", 300)
+    compression = params.get("compression", "tiff_lzw")
+    if not isinstance(dpi, int) or isinstance(dpi, bool) or not 72 <= dpi <= 1200:
+        raise ToolError("INVALID_PARAMS", "dpi deve essere un numero intero tra 72 e 1200.")
+    if compression not in {"tiff_lzw", "tiff_adobe_deflate", "raw"}:
+        raise ToolError("INVALID_PARAMS", "compression deve essere tiff_lzw, tiff_adobe_deflate o raw.")
+
+    pdfimages = os.environ.get("PDFIMAGES_BIN", "").strip() or shutil.which("pdfimages")
+    if not pdfimages:
+        pdftoppm_setting = os.environ.get("POPPLER_BIN", "").strip()
+        if pdftoppm_setting:
+            sibling = Path(pdftoppm_setting).expanduser().resolve().parent / ("pdfimages.exe" if os.name == "nt" else "pdfimages")
+            if sibling.is_file():
+                pdfimages = str(sibling)
+    if not pdfimages:
+        pdfimages = shutil.which("pdfimages.exe") if os.name == "nt" else None
+    if not pdfimages:
+        raise ToolError("POPPLER_MISSING", "Installare il comando pdfimages di Poppler per verificare la risoluzione raster originale.")
+    try:
+        listing = _run_isolated(context, [pdfimages, "-list", source], context.timeout_seconds)
+    except FileNotFoundError as exc:
+        raise ToolError("POPPLER_MISSING", "Il comando pdfimages di Poppler non è disponibile sul worker.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError("PDF_ANALYSIS_TIMEOUT", "Analisi delle immagini incorporate scaduta.", retryable=True) from exc
+    if listing.returncode != 0:
+        raise ToolError("PDF_ANALYSIS_FAILED", "Poppler non è riuscito a leggere le immagini incorporate nel PDF.")
+
+    embedded_dpi: list[float] = []
+    embedded_image_rows = 0
+    for line in listing.stdout.splitlines():
+        columns = line.split()
+        if len(columns) < 3 or columns[2].lower() not in {"image", "mask", "smask", "stencil"}:
+            continue
+        embedded_image_rows += 1
+        if len(columns) < 14:
+            continue
+        try:
+            x_dpi, y_dpi = float(columns[12]), float(columns[13])
+        except (ValueError, OverflowError):
+            continue
+        if math.isfinite(x_dpi) and math.isfinite(y_dpi) and x_dpi > 0 and y_dpi > 0:
+            embedded_dpi.append(min(x_dpi, y_dpi))
+    if embedded_image_rows and len(embedded_dpi) != embedded_image_rows:
+        raise ToolError("PDF_RESOLUTION_UNKNOWN", "Poppler ha rilevato immagini incorporate ma non ne ha determinato la risoluzione effettiva.")
+    minimum_embedded_dpi = min(embedded_dpi) if embedded_dpi else None
+    if minimum_embedded_dpi is not None and dpi > minimum_embedded_dpi + 0.5:
+        raise ToolError("SOURCE_RESOLUTION_TOO_LOW", f"Il DPI richiesto ({dpi}) supera la risoluzione raster originale più bassa ({minimum_embedded_dpi:g} DPI).")
+
+    source_path = str(Path(source).resolve())
+    original_name = context.source_filenames.get(source_path, Path(source).name)
+    basename = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(original_name).stem).strip("._-") or "document"
+    page_files: list[dict[str, Any]] = []
+    for page_number, page in enumerate(reader.pages, 1):
+        context.check()
+        width_points, height_points = float(page.cropbox.width), float(page.cropbox.height)
+        if int(page.get("/Rotate", 0) or 0) % 180:
+            width_points, height_points = height_points, width_points
+        pixels = math.ceil(width_points * dpi / 72) * math.ceil(height_points * dpi / 72)
+        if pixels <= 0 or pixels > 50_000_000:
+            raise ToolError("TIFF_PAGE_RESOURCE_LIMIT", f"La pagina {page_number} a {dpi} DPI supera il limite di 50 milioni di pixel per singola pagina.")
+        rendered = _render_page(context, source, page_number, f"tiff-page-{page_number:04d}", dpi=dpi)
+        page_path = context.output_path(".tiff")
+        try:
+            with Image.open(rendered) as rendered_image:
+                page_image = rendered_image.convert("RGB")
+                try:
+                    page_image.save(page_path, format="TIFF", compression=compression, dpi=(dpi, dpi))
+                finally:
+                    page_image.close()
+        except Exception as exc:
+            raise ToolError("TIFF_ENCODE_FAILED", f"Codifica TIFF non riuscita per la pagina {page_number}.") from exc
+        page_files.append({"path": str(page_path), "filename": f"{basename}-page-{page_number:04d}.tiff", "contentType": "image/tiff", "page": page_number})
+        context.progress(page_number, len(reader.pages))
+
+    source_resolution = {
+        "kind": "raster" if minimum_embedded_dpi is not None else "vector_or_no_embedded_images",
+        "embeddedImageCount": len(embedded_dpi),
+        "minimumEmbeddedDpi": minimum_embedded_dpi,
+        "requestedDpi": dpi,
+    }
+    return ToolResult({"pages": page_files, "pageCount": len(reader.pages), "sourceResolution": source_resolution}, len(reader.pages))
+
+
 def _split(context: ToolContext, inputs: dict[str, Any], params: dict[str, Any]) -> ToolResult:
     reader = context.pdf(_first_pdf(inputs)); ranges = params.get("ranges") or []
     if not ranges: raise ToolError("INVALID_PARAMS", "Specificare intervalli di pagine.")
@@ -1664,6 +1753,7 @@ def build_registry() -> ToolRegistry:
         "pdf.merge": _merge, "pdf.split": _split,
         "pdf.convert.pdfa": _convert_pdfa,
         "pdf.convert.tiff": _convert_tiff,
+        "pdf.convert.tiff.pages": _convert_tiff_pages,
         "pdf.page.insert": _insert_pages,
         "pdf.extract-pages": lambda c, i, p: _select_pages(c, i, p, "extract"),
         "pdf.delete-pages": lambda c, i, p: _select_pages(c, i, p, "delete"),
@@ -1677,7 +1767,7 @@ def build_registry() -> ToolRegistry:
         "pdf.bookmarks": _bookmarks, "pdf.bookmark.add": _bookmark_add, "flow.condition": _condition, "logic.if": _logic_if,
         "logic.conditionGroup": _condition_group, "flow.merge": _flow_merge, "data.lookup": _data_lookup,
     }
-    for logical_id, fn in tools.items(): registry.register(logical_id, "1.0.0", fn, 1800 if logical_id == "pdf.qr.removeMatchedPages" else 900 if logical_id in {"pdf.qr.readAll", "pdf.convert.tiff"} else 300 if logical_id in {"pdf.detect-qr", "pdf.detect-barcode", "pdf.remove-qr-pages", "pdf.ocr", "pdf.page.normalize"} else 120 if logical_id.startswith("pdf.") else 30, idempotent=True)
+    for logical_id, fn in tools.items(): registry.register(logical_id, "1.0.0", fn, 1800 if logical_id == "pdf.qr.removeMatchedPages" else 1800 if logical_id in {"pdf.qr.readAll", "pdf.convert.tiff", "pdf.convert.tiff.pages"} else 300 if logical_id in {"pdf.detect-qr", "pdf.detect-barcode", "pdf.remove-qr-pages", "pdf.ocr", "pdf.page.normalize"} else 120 if logical_id.startswith("pdf.") else 30, idempotent=True)
     registry.register("input.pdf-list", "1.0.0", lambda _c, _i, _p: ToolResult({"pdfs": []}), 30, idempotent=True)
     registry.register("pdf.merge", "1.1.0", _merge_planned, 120, idempotent=True)
     registry.register("pdf.merge", "1.2.0", _merge_ordered, 120, idempotent=True)

@@ -313,6 +313,22 @@ test("PDF to TIFF converter and output blocks expose typed, bounded TIFF contrac
   assert.equal(multipageOutput.parametersSchema.safeParse({ filename: "../risultato.tiff" }).success, false);
 });
 
+test("single-page TIFF conversion and multipage TIFF assembly expose API-ready contracts", () => {
+  const convert = getBlockDefinition("pdf.convert.tiff.pages", "1.0.0");
+  const create = getBlockDefinition("output.tiff.createMultipage", "1.0.0");
+  assert.ok(convert && create);
+  assert.equal(convert.worker.worker, "python");
+  assert.equal(convert.outputs.find((port) => port.id === "pages")?.type, "documentList");
+  assert.equal(convert.parametersSchema.safeParse({ dpi: 300, compression: "tiff_lzw" }).success, true);
+  assert.equal(create.worker.worker, "orchestrator");
+  assert.equal(create.inputs.find((port) => port.id === "pages")?.type, "documentList");
+  assert.equal(create.inputs.find((port) => port.id === "tiffs")?.multiple, true);
+  assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff" }).success, true);
+  assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff", fromIndex: 0, toIndex: 0 }).success, true);
+  assert.equal(create.parametersSchema.safeParse({ filename: "estratto.tiff", fromIndex: 3, toIndex: 2 }).success, false);
+  assert.equal(create.parametersSchema.safeParse({ filename: "../estratto.tiff" }).success, false);
+});
+
 test("pdf.ocr 1.1 validates page range, languages, DPI and optional outputs without changing v1.0", () => {
   const legacy = getBlockDefinition("pdf.ocr", "1.0.0");
   const ocr = getBlockDefinition("pdf.ocr", "1.1.0");

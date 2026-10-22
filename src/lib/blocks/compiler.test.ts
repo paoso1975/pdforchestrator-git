@@ -90,6 +90,30 @@ test("compiles TIFF conversion with a numeric API dpi and rejects a non-numeric 
   }), /deve essere di tipo numerico intero/);
 });
 
+test("compiles API filename and integer index bindings for the multipage TIFF block", () => {
+  const input = node("input.pdf", 0), convert = node("pdf.convert.tiff.pages", 1), multipage = node("output.tiff.createMultipage", 2);
+  input.data.parameters.parameter = "documento";
+  multipage.data.parameters = {
+    filename: { source: "api", name: "nomeTiff" },
+    fromIndex: { source: "api", name: "daIndex" },
+    toIndex: { source: "api", name: "aIndex" },
+  };
+  const edges: BatchEdge[] = [
+    { id: "input-convert", source: input.id, target: convert.id, sourceHandle: "pdf", targetHandle: "pdf" },
+    { id: "convert-pages", source: convert.id, target: multipage.id, sourceHandle: "pages", targetHandle: "pages" },
+  ];
+  const api = generateApiDefinition([input, convert, multipage]);
+  assert.deepEqual(api.issues, []);
+  const plan = compileGraph([input, convert, multipage], edges, {
+    apiParameters: api.parameters.map((parameter) => parameter.name),
+    apiParameterTypes: Object.fromEntries(api.parameters.map((parameter) => [parameter.name, parameter.type])),
+  });
+  assert.deepEqual(plan.blocks.find((block) => block.handlerId === "output.tiff.createMultipage")?.parameters.fromIndex, { source: "api", name: "daIndex" });
+  assert.throws(() => compileGraph([input, convert, multipage], edges, {
+    apiParameters: ["documento", "nomeTiff", "daIndex", "aIndex"], apiParameterTypes: { documento: "string", nomeTiff: "string", daIndex: "string", aIndex: "number" },
+  }), /deve essere di tipo numerico intero/);
+});
+
 test("compiled plan order, edge list and hashes are stable for independent nodes", () => {
   const input = node("input.pdf", 0), condition = node("logic.if", 1), output = node("output.pdf", 2);
   condition.data.parameters = { leftType: "number", rightType: "number", left: 1, right: 2, operator: "lt", caseSensitive: false, nullBehavior: "equalOnly" };
