@@ -736,7 +736,7 @@ Schema parametri:
 }
 ```
 
-## `pdf.convert.pdfa@1.0.0` — Converti PDF/A
+## `pdf.convert.pdfa@1.0.0` — Converti in PDF/A
 
 Categoria: Pagine. Icona Lucide: `Layers3`. Handler: `pdf.convert.pdfa` (python).
 
@@ -747,7 +747,9 @@ Default:
 
 ```json
 {
-  "target": "PDF/A-2b"
+  "target": "PDF/A-2b",
+  "verifyInput": false,
+  "verifyOutput": true
 }
 ```
 
@@ -759,16 +761,32 @@ Schema parametri:
   "type": "object",
   "properties": {
     "target": {
+      "default": "PDF/A-2b",
+      "description": "Profilo PDF/A richiesto.",
       "type": "string",
       "enum": [
         "PDF/A-1b",
         "PDF/A-2b",
         "PDF/A-3b"
       ]
+    },
+    "verifyInput": {
+      "default": false,
+      "description": "Se attivo, verifica il PDF in ingresso con veraPDF; se già conforme al target, lo restituisce senza ricodificarlo.",
+      "title": "Verifica IN",
+      "type": "boolean"
+    },
+    "verifyOutput": {
+      "default": true,
+      "description": "Se attivo, verifica con veraPDF il PDF risultante prima di restituirlo.",
+      "title": "Verifica OUT",
+      "type": "boolean"
     }
   },
   "required": [
-    "target"
+    "target",
+    "verifyInput",
+    "verifyOutput"
   ],
   "additionalProperties": false
 }

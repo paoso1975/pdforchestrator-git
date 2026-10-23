@@ -90,6 +90,31 @@ test("compiles TIFF conversion with a numeric API dpi and rejects a non-numeric 
   }), /deve essere di tipo numerico intero/);
 });
 
+test("PDF/A verification flags can be supplied by typed boolean API parameters", () => {
+  const input = node("input.pdf", 0), pdfa = node("pdf.convert.pdfa", 1), output = node("output.pdf", 2);
+  input.data.parameters.parameter = "documento";
+  pdfa.data.parameters = {
+    target: "PDF/A-2b",
+    verifyInput: { source: "api", name: "verificaIN" },
+    verifyOutput: { source: "api", name: "verificaOUT" },
+  };
+  const edges: BatchEdge[] = [
+    { id: "input-pdfa", source: input.id, target: pdfa.id, sourceHandle: "pdf", targetHandle: "pdf" },
+    { id: "pdfa-output", source: pdfa.id, target: output.id, sourceHandle: "pdf", targetHandle: "pdf" },
+  ];
+  const api = generateApiDefinition([input, pdfa, output]);
+  assert.deepEqual(api.issues, []);
+  assert.equal(api.parameters.find((parameter) => parameter.name === "verificaIN")?.type, "boolean");
+  assert.equal(api.parameters.find((parameter) => parameter.name === "verificaOUT")?.type, "boolean");
+  const plan = compileGraph([input, pdfa, output], edges, {
+    apiParameters: api.parameters.map((parameter) => parameter.name),
+    apiParameterTypes: Object.fromEntries(api.parameters.map((parameter) => [parameter.name, parameter.type])),
+  });
+  const compiled = plan.blocks.find((block) => block.handlerId === "pdf.convert.pdfa");
+  assert.deepEqual(compiled?.parameters.verifyInput, { source: "api", name: "verificaIN" });
+  assert.deepEqual(compiled?.parameters.verifyOutput, { source: "api", name: "verificaOUT" });
+});
+
 test("compiles API filename and integer index bindings for the multipage TIFF block", () => {
   const input = node("input.pdf", 0), convert = node("pdf.convert.tiff.pages", 1), multipage = node("output.tiff.createMultipage", 2);
   input.data.parameters.parameter = "documento";

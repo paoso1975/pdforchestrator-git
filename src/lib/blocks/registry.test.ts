@@ -279,7 +279,7 @@ test("QR matching block requires typed JSON records and API named output require
   assert.equal(output.parametersSchema.safeParse({}).success, false);
 });
 
-test("PDF/A converter only exposes veraPDF-checkable supported conformance levels", () => {
+test("PDF/A converter exposes a target and API-bindable input/output verification flags", () => {
   const block = getBlockDefinition("pdf.convert.pdfa", "1.0.0");
   assert.ok(block);
   assert.equal(block.worker.handlerId, "pdf.convert.pdfa");
@@ -287,6 +287,11 @@ test("PDF/A converter only exposes veraPDF-checkable supported conformance level
   assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-1b" }).success, true);
   assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-2b" }).success, true);
   assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-3b" }).success, true);
+  assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-2b", verifyInput: true, verifyOutput: false }).success, true);
+  assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-2b", verifyInput: "true" }).success, false);
+  const defaults = block.parametersSchema.parse({}) as { verifyInput: boolean; verifyOutput: boolean };
+  assert.equal(defaults.verifyInput, false);
+  assert.equal(defaults.verifyOutput, true);
   assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-2u" }).success, false);
   assert.equal(block.parametersSchema.safeParse({ target: "PDF/A-2a" }).success, false);
   assert.deepEqual(block.outputs.filter((port) => ["pdf", "validationReport"].includes(port.id)).map(({ id, type }) => [id, type]), [

@@ -410,14 +410,64 @@ def _insert_pages(context: ToolContext, inputs: dict[str, Any], params: dict[str
     return ToolResult({"pdf": artifact_path, "insertedCount": len(source_pages), "pageMap": page_map}, total_pages)
 
 
+def _validate_pdfa_with_verapdf(context: ToolContext, vera: str, path: str | Path, profile: str, target: str) -> dict[str, Any]:
+    """Return a parsed veraPDF report, including a negative compliance result."""
+    try:
+        validation = _run_isolated(context, [vera, "-f", profile, "--format", "xml", str(path)], context.timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError("PDFA_VALIDATION_TIMEOUT", "veraPDF ha superato il timeout di validazione.", retryable=True) from exc
+    except OSError as exc:
+        raise ToolError("PDFA_VALIDATOR", "Avvio di veraPDF non riuscito.") from exc
+    context.check()
+    report_xml = validation.stdout.strip()
+    if not report_xml or len(report_xml) > 2_000_000:
+        raise ToolError("PDFA_VALIDATOR", "veraPDF non ha restituito un report XML valido.")
+    try:
+        root = ET.fromstring(report_xml)
+        report_node = root.find(".//validationReport")
+        details_node = report_node.find("details") if report_node is not None else None
+        if report_node is None or report_node.get("isCompliant") not in {"true", "false"}:
+            raise ValueError("validationReport assente")
+        report = {
+            "validator": "veraPDF",
+            "profile": target,
+            "profileName": report_node.get("profileName"),
+            "isCompliant": report_node.get("isCompliant") == "true",
+            "passedRules": int(details_node.get("passedRules", "0")) if details_node is not None else 0,
+            "failedRules": int(details_node.get("failedRules", "0")) if details_node is not None else 0,
+            "passedChecks": int(details_node.get("passedChecks", "0")) if details_node is not None else 0,
+            "failedChecks": int(details_node.get("failedChecks", "0")) if details_node is not None else 0,
+        }
+    except (ET.ParseError, ValueError, TypeError) as exc:
+        raise ToolError("PDFA_VALIDATOR", "Il report veraPDF non contiene un validationReport leggibile.") from exc
+    if validation.returncode != 0 and report["isCompliant"]:
+        raise ToolError("PDFA_VALIDATOR", "veraPDF ha terminato con errore nonostante un report apparentemente conforme.")
+    return report
+
+
 def _convert_pdfa(context: ToolContext, inputs: dict[str, Any], params: dict[str, Any]) -> ToolResult:
-    """Convert with Ghostscript, then require an independent veraPDF pass."""
+    """Optionally inspect the input, convert only when needed, and optionally verify output."""
     source = _first_pdf(inputs)
     context.pdf(source)
-    target = params.get("target")
+    target = params.get("target", "PDF/A-2b")
+    verify_input = params.get("verifyInput", False)
+    verify_output = params.get("verifyOutput", True)
+    if not isinstance(verify_input, bool) or not isinstance(verify_output, bool):
+        raise ToolError("INVALID_PARAMS", "verifyInput e verifyOutput devono essere booleani.")
     profiles = {"PDF/A-1b": "1b", "PDF/A-2b": "2b", "PDF/A-3b": "3b"}
     if target not in profiles:
         raise ToolError("INVALID_PARAMS", "target deve essere PDF/A-1b, PDF/A-2b oppure PDF/A-3b.")
+    vera = os.environ.get("VERAPDF_BIN", "").strip() or shutil.which("verapdf")
+    if verify_input:
+        if not vera:
+            raise ToolError("PDFA_DEPENDENCY", "La verifica PDF/A in ingresso richiede veraPDF installato sul worker.")
+        input_report = _validate_pdfa_with_verapdf(context, vera, source, profiles[target], target)
+        if input_report["isCompliant"]:
+            result = {"pdf": source}
+            if verify_output:
+                result["validationReport"] = input_report
+            return ToolResult(result, len(context.pdf(source).pages))
+
     icc_value = os.environ.get("PDFA_ICC_PROFILE", "").strip()
     if not icc_value:
         raise ToolError("PDFA_CONFIG", "Configurare PDFA_ICC_PROFILE con un profilo ICC RGB valido.")
@@ -430,9 +480,10 @@ def _convert_pdfa(context: ToolContext, inputs: dict[str, Any], params: dict[str
     if len(icc_bytes) < 128 or declared_size < 128 or declared_size > len(icc_bytes) or icc_bytes[36:40] != b"acsp" or icc_bytes[16:20] != b"RGB ":
         raise ToolError("PDFA_CONFIG", "PDFA_ICC_PROFILE deve indicare un profilo ICC RGB valido.")
     gs = os.environ.get("GHOSTSCRIPT_BIN", "").strip() or shutil.which("gs") or shutil.which("gswin64c") or shutil.which("gswin32c")
-    vera = os.environ.get("VERAPDF_BIN", "").strip() or shutil.which("verapdf")
-    if not gs or not vera:
-        raise ToolError("PDFA_DEPENDENCY", "La conversione richiede Ghostscript e veraPDF installati sul worker.")
+    if not gs:
+        raise ToolError("PDFA_DEPENDENCY", "La conversione richiede Ghostscript installato sul worker.")
+    if verify_output and not vera:
+        raise ToolError("PDFA_DEPENDENCY", "La verifica PDF/A in uscita richiede veraPDF installato sul worker.")
 
     output = context.output_path()
     pdfmark = context.workdir / "pdfa-output-intent.ps"
@@ -469,40 +520,13 @@ def _convert_pdfa(context: ToolContext, inputs: dict[str, Any], params: dict[str
         raise ToolError("PDFA_CONVERSION", "Ghostscript non ha convertito il documento." + (f" Dettaglio: {detail}" if detail else ""))
     context.pdf(output)
 
-    try:
-        validation = _run_isolated(context, [vera, "-f", profiles[target], "--format", "xml", str(output)], context.timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        raise ToolError("PDFA_VALIDATION_TIMEOUT", "veraPDF ha superato il timeout di validazione.", retryable=True) from exc
-    except OSError as exc:
-        raise ToolError("PDFA_VALIDATOR", "Avvio di veraPDF non riuscito.") from exc
-    context.check()
-    report_xml = validation.stdout.strip()
-    if not report_xml or len(report_xml) > 2_000_000:
-        raise ToolError("PDFA_VALIDATOR", "veraPDF non ha restituito un report XML valido.")
-    try:
-        root = ET.fromstring(report_xml)
-        report_node = root.find(".//validationReport")
-        details_node = report_node.find("details") if report_node is not None else None
-        if report_node is None or report_node.get("isCompliant") not in {"true", "false"}:
-            raise ValueError("validationReport assente")
-        is_compliant = report_node.get("isCompliant") == "true"
-        report = {
-            "validator": "veraPDF",
-            "profile": target,
-            "profileName": report_node.get("profileName"),
-            "isCompliant": is_compliant,
-            "passedRules": int(details_node.get("passedRules", "0")) if details_node is not None else 0,
-            "failedRules": int(details_node.get("failedRules", "0")) if details_node is not None else 0,
-            "passedChecks": int(details_node.get("passedChecks", "0")) if details_node is not None else 0,
-            "failedChecks": int(details_node.get("failedChecks", "0")) if details_node is not None else 0,
-        }
-    except (ET.ParseError, ValueError, TypeError) as exc:
-        raise ToolError("PDFA_VALIDATOR", "Il report veraPDF non contiene un validationReport leggibile.") from exc
-    if validation.returncode != 0 and report["isCompliant"]:
-        raise ToolError("PDFA_VALIDATOR", "veraPDF è terminato con errore nonostante un report apparentemente conforme.")
-    if not report["isCompliant"]:
+    report = _validate_pdfa_with_verapdf(context, vera, output, profiles[target], target) if verify_output else None
+    if report is not None and not report["isCompliant"]:
         raise ToolError("PDFA_NON_COMPLIANT", f"Il documento non è conforme a {target} (regole fallite: {report['failedRules']}, controlli falliti: {report['failedChecks']}).")
-    return ToolResult({"pdf": str(output), "validationReport": report}, len(context.pdf(output).pages))
+    result = {"pdf": str(output)}
+    if report is not None:
+        result["validationReport"] = report
+    return ToolResult(result, len(context.pdf(output).pages))
 
 
 def _convert_tiff(context: ToolContext, inputs: dict[str, Any], params: dict[str, Any]) -> ToolResult:

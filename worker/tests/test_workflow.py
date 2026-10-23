@@ -453,6 +453,43 @@ class PdfaConversionTests(unittest.TestCase):
             self.assertIn(f"--permit-file-read={icc.resolve()}", gs_args)
             self.assertEqual(calls[1][0][1:4], ["-f", "2b", "--format"])
 
+    def test_compliant_input_is_returned_without_conversion_when_verify_input_is_enabled(self):
+        from subprocess import CompletedProcess
+        from pdforchestrator.tools import _convert_pdfa
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); source = root / "already-pdfa.pdf"; make_pdf(source, 1)
+            context = SplitToolTests.PypdfTestContext(root)
+            xml = '<report><jobs><job><validationReport profileName="PDF/A-2B validation profile" isCompliant="true"><details passedRules="100" failedRules="0" passedChecks="250" failedChecks="0"/></validationReport></job></jobs></report>'
+            calls = []
+            def run(_context, args, _timeout):
+                calls.append(args)
+                return CompletedProcess(args, 0, xml, "")
+            with patch.dict("os.environ", {"VERAPDF_BIN": "vera-test"}, clear=False), patch("pdforchestrator.tools._run_isolated", side_effect=run):
+                result = _convert_pdfa(context, {"pdf": str(source)}, {"target": "PDF/A-2b", "verifyInput": True, "verifyOutput": True})
+            self.assertEqual(result.outputs["pdf"], str(source))
+            self.assertTrue(result.outputs["validationReport"]["isCompliant"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][-1], str(source))
+
+    def test_noncompliant_input_converts_and_output_verification_is_optional(self):
+        from subprocess import CompletedProcess
+        from pdforchestrator.tools import _convert_pdfa
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); source = root / "source.pdf"; make_pdf(source, 1)
+            icc = root / "srgb.icc"; profile = bytearray(128); profile[0:4] = (128).to_bytes(4, "big"); profile[16:20] = b"RGB "; profile[36:40] = b"acsp"; icc.write_bytes(profile)
+            context = SplitToolTests.PypdfTestContext(root)
+            def run(_context, args, _timeout):
+                if args[0] == "vera-test":
+                    return CompletedProcess(args, 0, '<report><jobs><job><validationReport profileName="PDF/A-2B validation profile" isCompliant="false"><details passedRules="99" failedRules="1" passedChecks="200" failedChecks="2"/></validationReport></job></jobs></report>', "")
+                out_arg = next(item for item in args if item.startswith("-sOutputFile="))
+                Path(out_arg.split("=", 1)[1]).write_bytes(source.read_bytes())
+                return CompletedProcess(args, 0, "", "")
+            env = {"PDFA_ICC_PROFILE": str(icc), "GHOSTSCRIPT_BIN": "gs-test", "VERAPDF_BIN": "vera-test"}
+            with patch.dict("os.environ", env), patch("pdforchestrator.tools._run_isolated", side_effect=run):
+                result = _convert_pdfa(context, {"pdf": str(source)}, {"target": "PDF/A-2b", "verifyInput": True, "verifyOutput": False})
+            self.assertNotEqual(result.outputs["pdf"], str(source))
+            self.assertNotIn("validationReport", result.outputs)
+
     def test_conversion_rejects_non_compliant_or_unverifiable_output(self):
         from subprocess import CompletedProcess
         from pdforchestrator.tools import _convert_pdfa
